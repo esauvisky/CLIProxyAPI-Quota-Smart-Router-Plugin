@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "reset-aware-scheduler",
+      "name": "Reset-Aware Scheduler",
+      "description": "Routes Claude requests to the credential whose weekly quota resets soonest, so expiring quota is spent before quota that carries over.",
+      "author": "esauvisky",
+      "version": "0.1.0",
+      "repository": "https://github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin",
+      "homepage": "https://github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin",
+      "license": "MIT",
+      "tags": ["scheduler", "routing", "quota", "claude"]
+    }
+  ]
+}
