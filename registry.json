@@ -6,7 +6,7 @@
       "name": "Reset-Aware Scheduler",
       "description": "Spends expiring quota first: reset-aware Claude routing plus spread/<model> virtual models that rotate a credential pool by remaining quota per hour to reset, with a live dashboard.",
       "author": "esauvisky",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "repository": "https://github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin",
       "homepage": "https://github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin",
       "license": "MIT",
