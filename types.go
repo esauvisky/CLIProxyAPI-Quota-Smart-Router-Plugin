@@ -61,13 +61,15 @@ type rankEntry struct {
 // decision is one routing or scheduling choice, kept in a ring buffer for the UI.
 type decision struct {
 	Time time.Time `json:"time"`
-	// Kind is "route" (spread router), "schedule" (spread scheduler) or "reset-first".
-	Kind    string      `json:"kind"`
-	Model   string      `json:"model"`
-	Session string      `json:"session,omitempty"`
-	AuthID  string      `json:"auth_id,omitempty"`
-	Reason  string      `json:"reason"`
-	Ranking []rankEntry `json:"ranking,omitempty"`
+	// Kind is "balance" (credential pick for a model) or "group" (model group fallback).
+	Kind    string `json:"kind"`
+	Model   string `json:"model"`
+	Session string `json:"session,omitempty"`
+	// AuthID is the chosen credential for "balance" and the serving model for "group".
+	AuthID   string         `json:"auth_id,omitempty"`
+	Reason   string         `json:"reason"`
+	Ranking  []rankEntry    `json:"ranking,omitempty"`
+	Attempts []groupAttempt `json:"attempts,omitempty"`
 }
 
 // sessionBinding pins a client session to a credential until it goes idle.
@@ -90,20 +92,20 @@ type uiState struct {
 	Credentials []uiCredential   `json:"credentials"`
 	Sessions    []sessionBinding `json:"sessions"`
 	Decisions   []decision       `json:"decisions"`
+	// Models lists every model ID served by a credential, for the group editor.
+	Models []string `json:"models"`
 	// Error is set when the host credential list could not be read.
 	Error string `json:"error,omitempty"`
 	// ManagementError explains why quota collection is not running (no key, rejected key, IP ban).
 	ManagementError string `json:"management_error,omitempty"`
 }
 
-// uiCredential joins a credential with its pool membership and quota.
+// uiCredential joins a credential with its weight, models and quota.
 type uiCredential struct {
 	Auth   hostAuth        `json:"auth"`
-	InPool bool            `json:"in_pool"`
 	Weight float64         `json:"weight"`
 	Quota  credentialQuota `json:"quota"`
 	// HasQuota reports whether Quota holds a fetched snapshot.
-	HasQuota bool `json:"has_quota"`
-	// Signals is the last passive header snapshot seen by the scheduler (Claude/Codex).
-	Signals map[string]any `json:"signals,omitempty"`
+	HasQuota bool     `json:"has_quota"`
+	Models   []string `json:"models"`
 }

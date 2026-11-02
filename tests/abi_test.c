@@ -79,6 +79,8 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	require_contains(&plugin, "plugin.register", NULL, "\"scheduler\":true");
+	require_contains(&plugin, "plugin.register", NULL, "\"executor\":true");
+	require_contains(&plugin, "executor.identifier", NULL, "model-groups");
 	require_contains(&plugin, "scheduler.pick",
 					 "{\"Options\":{\"Metadata\":{\"requested_model\":\"m\"}},"
 					 "\"Candidates\":[{\"ID\":\"a\",\"Provider\":\"claude\","

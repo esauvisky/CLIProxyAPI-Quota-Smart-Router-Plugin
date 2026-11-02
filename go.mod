@@ -1,4 +1,4 @@
-module github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin
+module github.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin
 
 go 1.26
 

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#141a2e"/>
+      <stop offset="1" stop-color="#0a0e1a"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5ee7ff"/>
+      <stop offset="0.55" stop-color="#7c6cff"/>
+      <stop offset="1" stop-color="#ff5fd2"/>
+    </linearGradient>
+    <linearGradient id="hot" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5ee7ff"/>
+      <stop offset="1" stop-color="#39f2a5"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="10" y="10" width="236" height="236" rx="52" fill="url(#tile)"/>
+  <rect x="10" y="10" width="236" height="236" rx="52" fill="none" stroke="url(#rim)" stroke-width="3" opacity="0.9"/>
+
+  <!-- dim routes -->
+  <path d="M70 128 C 110 128, 110 76, 150 76" fill="none" stroke="#7c6cff" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+  <path d="M70 128 C 110 128, 110 180, 150 180" fill="none" stroke="#5b6478" stroke-width="7" stroke-linecap="round" opacity="0.7"/>
+  <!-- chosen route -->
+  <path d="M70 128 L 150 128" fill="none" stroke="url(#hot)" stroke-width="9" stroke-linecap="round" filter="url(#glow)"/>
+
+  <!-- source node -->
+  <circle cx="62" cy="128" r="20" fill="#0a0e1a" stroke="#5ee7ff" stroke-width="5" filter="url(#glow)"/>
+  <circle cx="62" cy="128" r="8" fill="#5ee7ff"/>
+
+  <!-- quota gauges at the route ends -->
+  <g>
+    <rect x="152" y="62" width="64" height="28" rx="14" fill="#151b30" stroke="#7c6cff" stroke-width="3" opacity="0.9"/>
+    <rect x="159" y="69" width="22" height="14" rx="7" fill="#7c6cff"/>
+  </g>
+  <g filter="url(#glow)">
+    <rect x="152" y="114" width="64" height="28" rx="14" fill="#10241f" stroke="#39f2a5" stroke-width="3"/>
+    <rect x="159" y="121" width="46" height="14" rx="7" fill="url(#hot)"/>
+  </g>
+  <g>
+    <rect x="152" y="166" width="64" height="28" rx="14" fill="#151b30" stroke="#5b6478" stroke-width="3"/>
+    <rect x="159" y="173" width="9" height="14" rx="5" fill="#ff5f7a"/>
+  </g>
+</svg>

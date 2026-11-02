@@ -52,6 +52,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 	"unsafe"
@@ -61,10 +62,11 @@ const (
 	abiVersion    uint32 = 1
 	schemaVersion uint32 = 9
 
-	pluginName    = "Reset-Aware Scheduler"
-	pluginVersion = "0.2.2"
+	pluginName    = "Quota Router"
+	pluginVersion = "0.4.0"
 	pluginAuthor  = "esauvisky"
-	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin"
+	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin"
+	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin/main/assets/logo.png"
 
 	methodPluginRegister     = "plugin.register"
 	methodPluginReconfigure  = "plugin.reconfigure"
@@ -75,6 +77,11 @@ const (
 	methodModelRoute         = "model.route"
 	methodManagementRegister = "management.register"
 	methodManagementHandle   = "management.handle"
+	methodExecutorIdentifier = "executor.identifier"
+	methodExecutorExecute    = "executor.execute"
+	methodExecutorStream     = "executor.execute_stream"
+	methodExecutorCount      = "executor.count_tokens"
+	methodExecutorHTTP       = "executor.http_request"
 )
 
 type envelope struct {
@@ -84,8 +91,20 @@ type envelope struct {
 }
 
 type envelopeError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+}
+
+// statusError is an error with the HTTP status the host should surface to the client.
+type statusError struct {
+	Code       string
+	Message    string
+	HTTPStatus int
+}
+
+func (e *statusError) Error() string {
+	return e.Message
 }
 
 func main() {}
@@ -119,6 +138,12 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	}
 	raw, errHandle := handleMethod(C.GoString(method), requestBytes)
 	if errHandle != nil {
+		var errStatus *statusError
+		if errors.As(errHandle, &errStatus) {
+			rawErr, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: errStatus.Code, Message: errStatus.Message, HTTPStatus: errStatus.HTTPStatus}})
+			writeResponse(response, rawErr)
+			return 1
+		}
 		writeResponse(response, errorEnvelope("plugin_error", errHandle.Error()))
 		return 1
 	}
@@ -157,9 +182,17 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		}
 		return okEnvelope(resp)
 	case methodModelRegister:
-		return registerSpreadModels(request)
+		return okEnvelope(groupModelRegistration(currentConfig()))
 	case methodModelRoute:
-		return routeSpread(request)
+		return routeGroup(request, currentConfig())
+	case methodExecutorIdentifier:
+		return okEnvelope(map[string]string{"identifier": groupProvider})
+	case methodExecutorExecute:
+		return executeGroup(request, currentConfig())
+	case methodExecutorStream:
+		return executeGroupStream(request, currentConfig())
+	case methodExecutorCount, methodExecutorHTTP:
+		return nil, &statusError{Code: "not_supported", Message: method + " is not supported for model groups", HTTPStatus: 501}
 	case methodManagementRegister:
 		return okEnvelope(managementRegistrationPayload())
 	case methodManagementHandle:
@@ -191,7 +224,7 @@ func callHost(method string, payload any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("decode host callback envelope %s (code=%d): %w", method, int(callCode), errUnmarshal)
 	}
 	if !env.OK {
-		return nil, fmt.Errorf("host callback %s: %s: %s", method, env.Error.Code, env.Error.Message)
+		return nil, &statusError{Code: env.Error.Code, Message: fmt.Sprintf("host callback %s: %s", method, env.Error.Message), HTTPStatus: env.Error.HTTPStatus}
 	}
 	return env.Result, nil
 }

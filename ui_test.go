@@ -9,10 +9,10 @@ import (
 
 func TestManagementRegistrationPaths(t *testing.T) {
 	reg := managementRegistrationPayload()
-	if len(reg.Routes) != 1 || reg.Routes[0].Method != http.MethodGet || reg.Routes[0].Path != "/plugins/reset-aware-scheduler/state" {
+	if len(reg.Routes) != 1 || reg.Routes[0].Method != http.MethodGet || reg.Routes[0].Path != "/plugins/quota-router/state" {
 		t.Fatalf("routes = %+v", reg.Routes)
 	}
-	if len(reg.Resources) != 1 || reg.Resources[0].Path != "/ui" || reg.Resources[0].Menu != "Reset-Aware Scheduler" {
+	if len(reg.Resources) != 1 || reg.Resources[0].Path != "/ui" || reg.Resources[0].Menu != "Quota Router" {
 		t.Fatalf("resources = %+v", reg.Resources)
 	}
 }
@@ -52,7 +52,7 @@ func TestHandleManagementState(t *testing.T) {
 	hostMu.Lock()
 	hostCache = hostSnapshot{}
 	hostMu.Unlock()
-	resp := callManagement(t, http.MethodGet, "/v0/management/plugins/reset-aware-scheduler/state")
+	resp := callManagement(t, http.MethodGet, "/v0/management/plugins/quota-router/state")
 	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Headers.Get("Content-Type"), "application/json") {
 		t.Fatalf("status=%d headers=%v", resp.StatusCode, resp.Headers)
 	}
@@ -63,9 +63,14 @@ func TestHandleManagementState(t *testing.T) {
 }
 
 func TestHandleManagementUI(t *testing.T) {
-	resp := callManagement(t, http.MethodGet, "/v0/resource/plugins/reset-aware-scheduler/ui")
-	if !strings.HasPrefix(resp.Headers.Get("Content-Type"), "text/html") || !strings.Contains(string(resp.Body), "/v0/management/plugins/reset-aware-scheduler/state") {
+	resp := callManagement(t, http.MethodGet, "/v0/resource/plugins/quota-router/ui")
+	if !strings.HasPrefix(resp.Headers.Get("Content-Type"), "text/html") {
 		t.Fatalf("headers=%v", resp.Headers)
+	}
+	for _, want := range []string{"/v0/management/plugins/quota-router/state", "/v8/management/config/plugins/configs/quota-router"} {
+		if !strings.Contains(string(resp.Body), want) {
+			t.Fatalf("ui html does not reference %s", want)
+		}
 	}
 }
 
@@ -73,7 +78,7 @@ func TestHandleManagementRejectsMalformed(t *testing.T) {
 	if _, errHandle := handleManagement([]byte("{")); errHandle == nil {
 		t.Fatal("malformed request accepted")
 	}
-	raw, _ := json.Marshal(managementRequest{Method: http.MethodGet, Path: "/v0/management/plugins/reset-aware-scheduler/other"})
+	raw, _ := json.Marshal(managementRequest{Method: http.MethodGet, Path: "/v0/management/plugins/quota-router/other"})
 	if _, errHandle := handleManagement(raw); errHandle == nil {
 		t.Fatal("unknown path accepted")
 	}
