@@ -62,11 +62,11 @@ const (
 	abiVersion    uint32 = 1
 	schemaVersion uint32 = 9
 
-	pluginName    = "Quota Router"
+	pluginName    = "Quota Smart Router"
 	pluginVersion = "0.4.0"
 	pluginAuthor  = "esauvisky"
-	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin"
-	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin/main/assets/logo.png"
+	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin"
+	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin/main/assets/logo.png"
 
 	methodPluginRegister     = "plugin.register"
 	methodPluginReconfigure  = "plugin.reconfigure"
@@ -191,7 +191,9 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return executeGroup(request, currentConfig())
 	case methodExecutorStream:
 		return executeGroupStream(request, currentConfig())
-	case methodExecutorCount, methodExecutorHTTP:
+	case methodExecutorCount:
+		return countGroupTokens(request, currentConfig())
+	case methodExecutorHTTP:
 		return nil, &statusError{Code: "not_supported", Message: method + " is not supported for model groups", HTTPStatus: 501}
 	case methodManagementRegister:
 		return okEnvelope(managementRegistrationPayload())

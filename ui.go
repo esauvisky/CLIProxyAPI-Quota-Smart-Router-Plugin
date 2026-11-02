@@ -10,7 +10,7 @@ import (
 
 const (
 	uiResourcePath     = "/ui"
-	mgmtStateRoutePath = "/plugins/quota-router/state"
+	mgmtStateRoutePath = "/plugins/quota-smart-router/state"
 )
 
 type managementRegistration struct {
@@ -51,13 +51,13 @@ func managementRegistrationPayload() managementRegistration {
 			{
 				Method:      http.MethodGet,
 				Path:        mgmtStateRoutePath,
-				Description: "Returns config, credentials, quota windows, session bindings and recent decisions of the Quota Router.",
+				Description: "Returns config, credentials, quota windows, session bindings and recent decisions of the Quota Smart Router.",
 			},
 		},
 		Resources: []managementResource{
 			{
 				Path:        uiResourcePath,
-				Menu:        "Quota Router",
+				Menu:        "Quota Smart Router",
 				Description: "Edit model groups, weights and settings; live view of quota windows, sessions and routing decisions.",
 			},
 		},
@@ -106,7 +106,7 @@ const uiHTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Quota Router</title>
+<title>Quota Smart Router</title>
 <style>
   :root, [data-theme='dark'] {
     --bg-secondary: #151412;
@@ -400,7 +400,7 @@ const uiHTML = `<!doctype html>
 <body>
 <main class="main-content">
   <header class="page-header">
-    <h1 class="page-title">Quota Router</h1>
+    <h1 class="page-title">Quota Smart Router</h1>
     <p class="page-desc">Model groups, credential weights and settings, plus the quota windows, sessions and routing decisions the router uses.</p>
   </header>
 
@@ -489,8 +489,8 @@ const uiHTML = `<!doctype html>
 </main>
 
 <script>
-const STATE_API_URL = '/v0/management/plugins/quota-router/state';
-const CONFIG_API_URL = '/v8/management/config/plugins/configs/quota-router';
+const STATE_API_URL = '/v0/management/plugins/quota-smart-router/state';
+const CONFIG_API_URL = '/v8/management/config/plugins/configs/quota-smart-router';
 const REFRESH_MS = 10000;
 const APPLY_WAIT_MS = 1500;
 const ZERO_TIME = '0001-01-01T00:00:00Z';

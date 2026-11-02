@@ -1,6 +1,6 @@
-# CLIProxyAPI Quota Router Plugin
+# CLIProxyAPI Quota Smart Router Plugin
 
-<img src="assets/logo.png" width="96" align="right" alt="Quota Router logo">
+<img src="assets/logo.png" width="96" align="right" alt="Quota Smart Router logo">
 
 This ABI v1 plugin works on stock CLIProxyAPI and does two things:
 
@@ -56,9 +56,13 @@ Once a stream has started, a failure ends the request, because output was
 already sent. When every target fails, the client gets the last target's
 status and a message listing each attempt. Groups cannot contain other groups.
 
+`count_tokens` on a group is answered locally with the `o200k_base` tokenizer,
+the same estimate CPA uses for providers without a native count endpoint,
+because a group has no single upstream to ask.
+
 ## Dashboard
 
-**Quota Router** in the Management UI menu shows every credential with its
+**Quota Smart Router** in the Management UI menu shows every credential with its
 quota windows and weight, the active session bindings with their idle
 countdown, and the recent decisions: the full ranking behind each balanced
 pick, and each group request's attempts. Groups, weights and settings are
@@ -70,7 +74,7 @@ edited there and saved to the plugin's config.
 make test
 ```
 
-Produces `build/quota-router.so`.
+Produces `build/quota-smart-router.so`.
 
 ## Install from the management interface
 
@@ -80,7 +84,7 @@ Add this registry URL to `plugins.store-sources`:
 plugins:
   enabled: true
   store-sources:
-    - "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin/main/registry.json"
+    - "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin/main/registry.json"
 ```
 
 Only one scheduler plugin is active at a time.
@@ -91,7 +95,7 @@ Only one scheduler plugin is active at a time.
 plugins:
   enabled: true
   configs:
-    quota-router:
+    quota-smart-router:
       enabled: true
       min_remaining: 0.02
       idle_minutes: 5

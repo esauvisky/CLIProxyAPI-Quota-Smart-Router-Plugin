@@ -2,14 +2,14 @@
   "schema_version": 1,
   "plugins": [
     {
-      "id": "quota-router",
-      "name": "Quota Router",
+      "id": "quota-smart-router",
+      "name": "Quota Smart Router",
       "description": "Balances models served by several credentials by remaining quota per hour to reset, with session stickiness, and adds model groups that fall back through a list of models until one succeeds.",
       "author": "esauvisky",
       "version": "0.4.0",
-      "repository": "https://github.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin",
-      "homepage": "https://github.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin",
-      "logo": "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin/main/assets/logo.png",
+      "repository": "https://github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin",
+      "homepage": "https://github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin",
+      "logo": "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin/main/assets/logo.png",
       "license": "MIT",
       "tags": ["scheduler", "routing", "quota", "fallback", "model-groups", "ui"]
     }

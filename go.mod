@@ -1,5 +1,10 @@
-module github.com/esauvisky/CLIProxyAPI-Quota-Router-Plugin
+module github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin
 
 go 1.26
 
-require gopkg.in/yaml.v3 v3.0.1
+require (
+	github.com/tiktoken-go/tokenizer v0.8.1
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require github.com/dlclark/regexp2/v2 v2.5.1 // indirect
