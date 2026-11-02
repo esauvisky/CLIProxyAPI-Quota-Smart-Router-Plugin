@@ -4,14 +4,16 @@ This ABI v1 scheduler plugin routes Claude requests to the credential whose
 **weekly quota resets soonest**, so quota that is about to expire is spent
 before quota that would carry over to the next week.
 
-It ranks credentials from the `Anthropic-Ratelimit-Unified-*` headers that
-CLIProxyAPI already records from every Claude response. It makes no upstream
-calls of its own.
+Plain Claude models are ranked from the `Anthropic-Ratelimit-Unified-*`
+headers CLIProxyAPI already records from every Claude response. Optional
+`spread/<model>` virtual models rotate a chosen credential pool across
+providers, and a dashboard shows every value the plugin uses.
 
 ## Host requirement
 
 The host must pass each candidate's quota snapshot in
-`SchedulerAuthCandidate.Metadata["quota_signals"]`. Stock CLIProxyAPI does not
+`SchedulerAuthCandidate.Metadata["quota_signals"]` and forward
+`ModelRouteResponse.TargetAuthID`. Stock CLIProxyAPI does not
 do this yet. On a host without it, every scheduled request fails with
 `candidate ... has no quota_signals metadata`, so a wrong image is caught right away.
 
@@ -36,6 +38,48 @@ limited, which keeps prompt caches warm much like fill-first.
 
 A credential that has never served a request has no snapshot and is used only
 when no ranked credential is available.
+
+## Spread pool (`spread/<model>`)
+
+Models listed in `spread.models` are published again as `<prefix><model>`
+(default `spread/`). A request for one of them rotates across the credentials in
+`spread.credentials`, from any provider that serves the model (for example
+Claude OAuth and Antigravity for `claude-opus-4-8`).
+
+Each pool credential is ranked by
+
+```
+rate = weight * remaining / hours_until_reset
+```
+
+of its longest quota window that applies to the model. A credential that resets
+tomorrow with 30% left (1.25%/h) beats one that resets in 6 days with 60% left
+(0.42%/h), so accounts with different reset days are compared fairly. `weight`
+(default 1) scales for plan size, e.g. 20 for Max 20x and 1 for Pro. A credential
+is skipped while disabled, cooling down, not serving the model, without quota
+data, or when any applicable window has less than `min_remaining` left.
+
+Sessions are sticky: a session stays on its credential while prompts keep
+coming. After `idle_minutes` (default 5) without a prompt the prompt cache is
+cold anyway, so the next prompt is ranked again and may move. If the chosen
+credential fails, the host retry picks the next best pool credential of the same
+provider.
+
+Quota comes from the same provider usage endpoints the Management Center quota
+cards use (Claude, Codex, Antigravity, Kimi, xAI), called through the CPA
+management `api-call` endpoint, plus `quota/fetch` for plugin providers such as
+OpenCode Go. Snapshots refresh every `management.refresh_minutes` in the
+background.
+
+The router hands its credential choice to the scheduler through
+`ModelRouteResponse.TargetAuthID`, which also requires the patched host.
+
+## Dashboard
+
+**Reset-Aware Scheduler** in the Management UI menu shows every credential with
+its quota windows, pool membership, weight and passive header signals, the
+active session bindings with their idle countdown, and the recent routing
+decisions with the full ranking behind each one.
 
 ## Build
 
@@ -68,4 +112,19 @@ plugins:
       enabled: true
       min_remaining: 0.02
       tie_window_minutes: 60
+      management:
+        url: "http://127.0.0.1:8317"
+        key: "<management key>"
+        refresh_minutes: 5
+      spread:
+        prefix: "spread/"
+        idle_minutes: 5
+        models: ["claude-opus-4-8"]
+        credentials:
+          - id: "claude-82849846-claude1@pokemod.dev.json"
+            provider: "claude"
+            weight: 20
+          - id: "antigravity-esauvisky@gmail.com.json"
+            provider: "antigravity"
+            weight: 5
 ```

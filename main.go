@@ -9,11 +9,14 @@ typedef struct {
 	size_t len;
 } cliproxy_buffer;
 
+typedef int (*cliproxy_host_call_fn)(void*, const char*, const uint8_t*, size_t, cliproxy_buffer*);
+typedef void (*cliproxy_host_free_fn)(void*, size_t);
+
 typedef struct {
 	uint32_t abi_version;
 	void* host_ctx;
-	void* call;
-	void* free_buffer;
+	cliproxy_host_call_fn call;
+	cliproxy_host_free_fn free_buffer;
 } cliproxy_host_api;
 
 typedef int (*cliproxy_plugin_call_fn)(char*, uint8_t*, size_t, cliproxy_buffer*);
@@ -30,11 +33,26 @@ typedef struct {
 extern int cliproxyPluginCall(char*, uint8_t*, size_t, cliproxy_buffer*);
 extern void cliproxyPluginFree(void*, size_t);
 extern void cliproxyPluginShutdown(void);
+
+static const cliproxy_host_api* stored_host;
+
+static void store_host_api(const cliproxy_host_api* host) {
+	stored_host = host;
+}
+
+static int call_host_api(const char* method, const uint8_t* request, size_t request_len, cliproxy_buffer* response) {
+	return stored_host->call(stored_host->host_ctx, method, request, request_len, response);
+}
+
+static void free_host_buffer(void* ptr, size_t len) {
+	stored_host->free_buffer(ptr, len);
+}
 */
 import "C"
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 	"unsafe"
 )
@@ -44,15 +62,19 @@ const (
 	schemaVersion uint32 = 9
 
 	pluginName    = "Reset-Aware Scheduler"
-	pluginVersion = "0.1.0"
+	pluginVersion = "0.2.0"
 	pluginAuthor  = "esauvisky"
 	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin"
 
-	methodPluginRegister    = "plugin.register"
-	methodPluginReconfigure = "plugin.reconfigure"
-	methodPluginQuiesce     = "plugin.quiesce"
-	methodPluginShutdown    = "plugin.shutdown"
-	methodSchedulerPick     = "scheduler.pick"
+	methodPluginRegister     = "plugin.register"
+	methodPluginReconfigure  = "plugin.reconfigure"
+	methodPluginQuiesce      = "plugin.quiesce"
+	methodPluginShutdown     = "plugin.shutdown"
+	methodSchedulerPick      = "scheduler.pick"
+	methodModelRegister      = "model.register"
+	methodModelRoute         = "model.route"
+	methodManagementRegister = "management.register"
+	methodManagementHandle   = "management.handle"
 )
 
 type envelope struct {
@@ -73,6 +95,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	if plugin == nil {
 		return 1
 	}
+	C.store_host_api(host)
 	plugin.abi_version = C.uint32_t(abiVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -133,9 +156,44 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			return nil, errPick
 		}
 		return okEnvelope(resp)
+	case methodModelRegister:
+		return registerSpreadModels(request)
+	case methodModelRoute:
+		return routeSpread(request)
+	case methodManagementRegister:
+		return okEnvelope(managementRegistrationPayload())
+	case methodManagementHandle:
+		return handleManagement(request)
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
+}
+
+func callHost(method string, payload any) (json.RawMessage, error) {
+	rawPayload, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		return nil, fmt.Errorf("marshal host callback payload %s: %w", method, errMarshal)
+	}
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+	cPayload := C.CBytes(rawPayload)
+	defer C.free(cPayload)
+
+	var response C.cliproxy_buffer
+	callCode := C.call_host_api(cMethod, (*C.uint8_t)(cPayload), C.size_t(len(rawPayload)), &response)
+	rawResponse := C.GoBytes(response.ptr, C.int(response.len))
+	if response.ptr != nil {
+		C.free_host_buffer(response.ptr, response.len)
+	}
+
+	var env envelope
+	if errUnmarshal := json.Unmarshal(rawResponse, &env); errUnmarshal != nil {
+		return nil, fmt.Errorf("decode host callback envelope %s (code=%d): %w", method, int(callCode), errUnmarshal)
+	}
+	if !env.OK {
+		return nil, fmt.Errorf("host callback %s: %s: %s", method, env.Error.Code, env.Error.Message)
+	}
+	return env.Result, nil
 }
 
 func okEnvelope(v any) ([]byte, error) {

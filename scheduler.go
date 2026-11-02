@@ -53,18 +53,52 @@ type configField struct {
 }
 
 type registrationCapabilities struct {
-	Scheduler bool `json:"scheduler"`
+	Scheduler      bool `json:"scheduler"`
+	ModelRegistrar bool `json:"model_registrar"`
+	ModelRouter    bool `json:"model_router"`
+	ManagementAPI  bool `json:"management_api"`
 }
 
 type pluginConfig struct {
-	// MinRemaining is the weekly fraction a credential must still have to be ranked.
-	MinRemaining float64 `yaml:"min_remaining"`
+	// MinRemaining is the fraction a credential's windows must still have to be ranked.
+	MinRemaining float64 `yaml:"min_remaining" json:"min_remaining"`
 	// TieWindowMinutes groups weekly resets this close together and prefers the one with more remaining.
-	TieWindowMinutes int `yaml:"tie_window_minutes"`
+	TieWindowMinutes int              `yaml:"tie_window_minutes" json:"tie_window_minutes"`
+	Management       managementConfig `yaml:"management" json:"management"`
+	Spread           spreadConfig     `yaml:"spread" json:"spread"`
+}
+
+// managementConfig reaches the CPA management API, which proxies provider usage endpoints.
+type managementConfig struct {
+	URL            string `yaml:"url" json:"url"`
+	Key            string `yaml:"key" json:"-"`
+	RefreshMinutes int    `yaml:"refresh_minutes" json:"refresh_minutes"`
+}
+
+// spreadConfig exposes <Prefix><model> virtual models that rotate across a credential pool.
+type spreadConfig struct {
+	Prefix string `yaml:"prefix" json:"prefix"`
+	// IdleMinutes is how long a session may go without a prompt before it can move to another credential.
+	IdleMinutes int              `yaml:"idle_minutes" json:"idle_minutes"`
+	Models      []string         `yaml:"models" json:"models"`
+	Credentials []poolCredential `yaml:"credentials" json:"credentials"`
+}
+
+type poolCredential struct {
+	// ID is the host auth ID (the auth file name for file credentials).
+	ID       string  `yaml:"id" json:"id"`
+	Provider string  `yaml:"provider" json:"provider"`
+	Weight   float64 `yaml:"weight" json:"weight"`
 }
 
 type schedulerPickRequest struct {
+	Model      string               `json:"Model"`
+	Options    schedulerOptions     `json:"Options"`
 	Candidates []schedulerCandidate `json:"Candidates"`
+}
+
+type schedulerOptions struct {
+	Metadata map[string]any `json:"Metadata"`
 }
 
 type schedulerCandidate struct {
@@ -74,8 +108,10 @@ type schedulerCandidate struct {
 }
 
 type schedulerPickResponse struct {
-	AuthID  string `json:"AuthID,omitempty"`
-	Handled bool   `json:"Handled"`
+	AuthID       string `json:"AuthID,omitempty"`
+	Handled      bool   `json:"Handled"`
+	Reject       bool   `json:"Reject,omitempty"`
+	RejectReason string `json:"RejectReason,omitempty"`
 }
 
 type rankedCandidate struct {
@@ -91,7 +127,12 @@ func init() {
 }
 
 func defaultPluginConfig() pluginConfig {
-	return pluginConfig{MinRemaining: 0.02, TieWindowMinutes: 60}
+	return pluginConfig{
+		MinRemaining:     0.02,
+		TieWindowMinutes: 60,
+		Management:       managementConfig{URL: "http://127.0.0.1:8317", RefreshMinutes: 5},
+		Spread:           spreadConfig{Prefix: "spread/", IdleMinutes: 5},
+	}
 }
 
 func currentConfig() pluginConfig {
@@ -117,7 +158,45 @@ func configurePlugin(raw []byte) error {
 	if cfg.TieWindowMinutes < 0 {
 		return fmt.Errorf("tie_window_minutes must not be negative, got %d", cfg.TieWindowMinutes)
 	}
+	if errSpread := validateSpread(&cfg); errSpread != nil {
+		return errSpread
+	}
 	activeConfig.Store(cfg)
+	return nil
+}
+
+func validateSpread(cfg *pluginConfig) error {
+	if len(cfg.Spread.Models) == 0 {
+		return nil
+	}
+	if cfg.Spread.Prefix == "" {
+		return fmt.Errorf("spread.prefix must not be empty when spread.models is set")
+	}
+	if cfg.Spread.IdleMinutes <= 0 {
+		return fmt.Errorf("spread.idle_minutes must be positive, got %d", cfg.Spread.IdleMinutes)
+	}
+	if len(cfg.Spread.Credentials) == 0 {
+		return fmt.Errorf("spread.credentials must list the pool when spread.models is set")
+	}
+	if cfg.Management.URL == "" || cfg.Management.Key == "" {
+		return fmt.Errorf("management.url and management.key are required for spread quota collection")
+	}
+	if cfg.Management.RefreshMinutes <= 0 {
+		return fmt.Errorf("management.refresh_minutes must be positive, got %d", cfg.Management.RefreshMinutes)
+	}
+	for index := range cfg.Spread.Credentials {
+		credential := &cfg.Spread.Credentials[index]
+		if credential.ID == "" || credential.Provider == "" {
+			return fmt.Errorf("spread.credentials[%d] needs id and provider", index)
+		}
+		if credential.Weight < 0 {
+			return fmt.Errorf("spread.credentials[%d] weight must not be negative, got %v", index, credential.Weight)
+		}
+		// Weight is optional; an unset weight counts every credential equally.
+		if credential.Weight == 0 {
+			credential.Weight = 1
+		}
+	}
 	return nil
 }
 
@@ -134,7 +213,7 @@ func pluginRegistration() registration {
 					Name:        "min_remaining",
 					Type:        "number",
 					Default:     0.02,
-					Description: "Weekly quota fraction (0-1) a Claude credential must still have to be preferred.",
+					Description: "Quota fraction (0-1) every window of a credential must still have to be preferred.",
 				},
 				{
 					Name:        "tie_window_minutes",
@@ -142,9 +221,19 @@ func pluginRegistration() registration {
 					Default:     60,
 					Description: "Weekly resets within this many minutes of the earliest one count as tied; the credential with more remaining wins.",
 				},
+				{
+					Name:        "management",
+					Type:        "object",
+					Description: "CPA management API used to read provider quota ({url, key, refresh_minutes}).",
+				},
+				{
+					Name:        "spread",
+					Type:        "object",
+					Description: "Virtual <prefix><model> models that rotate across a credential pool by remaining quota per hour to reset ({prefix, idle_minutes, models, credentials: [{id, provider, weight}]}).",
+				},
 			},
 		},
-		Capabilities: registrationCapabilities{Scheduler: true},
+		Capabilities: registrationCapabilities{Scheduler: true, ModelRegistrar: true, ModelRouter: true, ManagementAPI: true},
 	}
 }
 
@@ -153,12 +242,30 @@ func pluginRegistration() registration {
 // without an observed weekly window are left to the host's configured selector,
 // which only runs when no candidate can be ranked.
 func pick(req schedulerPickRequest, cfg pluginConfig, now time.Time) (schedulerPickResponse, error) {
-	ranked := make([]rankedCandidate, 0, len(req.Candidates))
+	stateMu.Lock()
 	for _, candidate := range req.Candidates {
 		rawSignals, present := candidate.Metadata[metadataQuotaSignals]
 		if !present {
+			stateMu.Unlock()
 			return schedulerPickResponse{}, fmt.Errorf("candidate %s has no %s metadata: this CLIProxyAPI build does not expose quota signals to scheduler plugins", candidate.ID, metadataQuotaSignals)
 		}
+		if signals, okSignals := rawSignals.(map[string]any); okSignals {
+			lastSignals[candidate.ID] = signals
+		}
+	}
+	stateMu.Unlock()
+
+	requested, okRequested := req.Options.Metadata[metadataRequestedModel].(string)
+	if !okRequested {
+		return schedulerPickResponse{}, fmt.Errorf("scheduler request has no %s metadata", metadataRequestedModel)
+	}
+	if cfg.Spread.Prefix != "" && strings.HasPrefix(requested, cfg.Spread.Prefix) {
+		return pickSpread(req, cfg, now)
+	}
+
+	ranked := make([]rankedCandidate, 0, len(req.Candidates))
+	for _, candidate := range req.Candidates {
+		rawSignals := candidate.Metadata[metadataQuotaSignals]
 		if candidate.Provider != "claude" || rawSignals == nil {
 			continue
 		}
@@ -194,6 +301,9 @@ func pick(req schedulerPickRequest, cfg pluginConfig, now time.Time) (schedulerP
 			best = entry
 		}
 	}
+	stateMu.Lock()
+	recordDecision(decision{Time: now, Kind: "reset-first", Model: requested, AuthID: best.id, Reason: fmt.Sprintf("earliest weekly reset %s, %.0f%% left", best.reset.Format(time.RFC3339), best.remaining*100)})
+	stateMu.Unlock()
 	return schedulerPickResponse{AuthID: best.id, Handled: true}, nil
 }
 

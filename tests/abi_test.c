@@ -80,7 +80,8 @@ int main(int argc, char **argv) {
 	}
 	require_contains(&plugin, "plugin.register", NULL, "\"scheduler\":true");
 	require_contains(&plugin, "scheduler.pick",
-					 "{\"Candidates\":[{\"ID\":\"a\",\"Provider\":\"claude\","
+					 "{\"Options\":{\"Metadata\":{\"requested_model\":\"m\"}},"
+					 "\"Candidates\":[{\"ID\":\"a\",\"Provider\":\"claude\","
 					 "\"Metadata\":{\"quota_signals\":null}}]}",
 					 "\"Handled\":false");
 	plugin.shutdown();

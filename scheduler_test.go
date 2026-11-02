@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-var testNow = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+var (
+	testNow     = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	testOptions = schedulerOptions{Metadata: map[string]any{metadataRequestedModel: "claude-opus-4-8"}}
+)
 
 func claudeCandidate(id string, resetIn time.Duration, utilization string) schedulerCandidate {
 	return schedulerCandidate{ID: id, Provider: "claude", Metadata: map[string]any{
@@ -22,7 +25,7 @@ func claudeCandidate(id string, resetIn time.Duration, utilization string) sched
 
 func mustPick(t *testing.T, candidates ...schedulerCandidate) schedulerPickResponse {
 	t.Helper()
-	resp, errPick := pick(schedulerPickRequest{Candidates: candidates}, defaultPluginConfig(), testNow)
+	resp, errPick := pick(schedulerPickRequest{Options: testOptions, Candidates: candidates}, defaultPluginConfig(), testNow)
 	if errPick != nil {
 		t.Fatalf("pick() error = %v", errPick)
 	}
@@ -96,21 +99,21 @@ func TestPickUnhandledWithoutWeeklySignals(t *testing.T) {
 }
 
 func TestPickFailsWhenHostOmitsQuotaMetadata(t *testing.T) {
-	_, errPick := pick(schedulerPickRequest{Candidates: []schedulerCandidate{{ID: "a", Provider: "claude"}}}, defaultPluginConfig(), testNow)
+	_, errPick := pick(schedulerPickRequest{Options: testOptions, Candidates: []schedulerCandidate{{ID: "a", Provider: "claude"}}}, defaultPluginConfig(), testNow)
 	if errPick == nil || !strings.Contains(errPick.Error(), metadataQuotaSignals) {
 		t.Fatalf("pick() error = %v, want missing %s error", errPick, metadataQuotaSignals)
 	}
 }
 
 func TestPickFailsOnMalformedSignal(t *testing.T) {
-	_, errPick := pick(schedulerPickRequest{Candidates: []schedulerCandidate{claudeCandidate("a", time.Hour, "lots")}}, defaultPluginConfig(), testNow)
+	_, errPick := pick(schedulerPickRequest{Options: testOptions, Candidates: []schedulerCandidate{claudeCandidate("a", time.Hour, "lots")}}, defaultPluginConfig(), testNow)
 	if errPick == nil || !strings.Contains(errPick.Error(), claude7dUtilization) {
 		t.Fatalf("pick() error = %v, want utilization parse error", errPick)
 	}
 }
 
 func TestSchedulerPickEnvelope(t *testing.T) {
-	request := `{"Provider":"claude","Candidates":[` +
+	request := `{"Provider":"claude","Options":{"Metadata":{"requested_model":"claude-opus-4-8"}},"Candidates":[` +
 		`{"ID":"later","Provider":"claude","Metadata":{"quota_signals":{"Anthropic-Ratelimit-Unified-7d-Reset":"` + strconv.FormatInt(time.Now().Add(48*time.Hour).Unix(), 10) + `","Anthropic-Ratelimit-Unified-7d-Utilization":"0.1"}}},` +
 		`{"ID":"sooner","Provider":"claude","Metadata":{"quota_signals":{"Anthropic-Ratelimit-Unified-7d-Reset":"` + strconv.FormatInt(time.Now().Add(24*time.Hour).Unix(), 10) + `","Anthropic-Ratelimit-Unified-7d-Utilization":"0.5"}}}]}`
 	raw, errHandle := handleMethod(methodSchedulerPick, []byte(request))
