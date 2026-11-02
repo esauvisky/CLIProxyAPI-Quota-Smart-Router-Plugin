@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,10 +143,17 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("model group %s is not configured", req.Model)
 	}
+	now := time.Now()
+	session := sessionKey(req.Metadata)
+	resetRefusalsIfAllRefused(cfg, session, group, now)
 	var attempts []groupAttempt
 	var lastErr error
 	for _, model := range group.Models {
-		reason, errSkip := skipReason(cfg, model, time.Now())
+		if isSessionRefused(cfg, session, group.ID, model, now) {
+			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: refused earlier in session"})
+			continue
+		}
+		reason, errSkip := skipReason(cfg, model, now)
 		if errSkip != nil {
 			return nil, errSkip
 		}
@@ -170,6 +178,12 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 		if errDecode := json.Unmarshal(rawResp, &resp); errDecode != nil {
 			return nil, fmt.Errorf("decode host.model.execute response: %w", errDecode)
 		}
+		if errRefusal := checkNonStreamResponse(resp.Body); errRefusal != nil {
+			recordSessionRefusal(session, group.ID, model, time.Now())
+			attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errRefusal.Error()})
+			lastErr = errRefusal
+			continue
+		}
 		attempts = append(attempts, groupAttempt{Model: model, Result: "served"})
 		recordGroupDecision(group, attempts, model)
 		return okEnvelope(executorResponse{Payload: resp.Body, Headers: resp.Headers})
@@ -178,8 +192,8 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	return nil, groupFailure(group, attempts, lastErr)
 }
 
-// executeGroupStream opens the first group model that starts streaming and forwards its chunks.
-// Models are only switched before any output; a failure mid-stream ends the stream.
+// executeGroupStream opens the first group model that produces visible output without refusing
+// and forwards its chunks.
 func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 	var req executorRequest
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
@@ -192,10 +206,17 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("model group %s is not configured", req.Model)
 	}
+	now := time.Now()
+	session := sessionKey(req.Metadata)
+	resetRefusalsIfAllRefused(cfg, session, group, now)
 	var attempts []groupAttempt
 	var lastErr error
 	for _, model := range group.Models {
-		reason, errSkip := skipReason(cfg, model, time.Now())
+		if isSessionRefused(cfg, session, group.ID, model, now) {
+			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: refused earlier in session"})
+			continue
+		}
+		reason, errSkip := skipReason(cfg, model, now)
 		if errSkip != nil {
 			return nil, errSkip
 		}
@@ -220,17 +241,36 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		if errDecode := json.Unmarshal(rawResp, &resp); errDecode != nil {
 			return nil, fmt.Errorf("decode host.model.execute_stream response: %w", errDecode)
 		}
+		prefetched, done, errPrefetch := prefetchStream(resp.StreamID, req.HostCallbackID)
+		if errPrefetch != nil {
+			recordSessionRefusal(session, group.ID, model, time.Now())
+			attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errPrefetch.Error()})
+			lastErr = errPrefetch
+			continue
+		}
 		attempts = append(attempts, groupAttempt{Model: model, Result: "served"})
 		recordGroupDecision(group, attempts, model)
-		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID)
+		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID, prefetched, done, session, group.ID, model)
 		return okEnvelope(executorStreamOpenResponse{Headers: resp.Headers})
 	}
 	recordGroupDecision(group, attempts, "")
 	return nil, groupFailure(group, attempts, lastErr)
 }
 
-// forwardStream copies the target model's stream into the group request's stream.
-func forwardStream(source, target, callbackID string) {
+// forwardStream flushes prefetched chunks and copies the remainder of the target model's stream.
+func forwardStream(source, target, callbackID string, prefetched [][]byte, sourceDone bool, session, groupID, model string) {
+	for _, payload := range prefetched {
+		if _, errEmit := hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: payload, HostCallbackID: callbackID}); errEmit != nil {
+			if !sourceDone {
+				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: source, HostCallbackID: callbackID})
+			}
+			return
+		}
+	}
+	if sourceDone {
+		closeStream(target, callbackID, "")
+		return
+	}
 	for {
 		rawRead, errRead := hostCall(methodHostModelStreamRead, hostStreamRef{StreamID: source, HostCallbackID: callbackID})
 		if errRead != nil {
@@ -243,6 +283,9 @@ func forwardStream(source, target, callbackID string) {
 			return
 		}
 		if len(chunk.Payload) > 0 {
+			if refusal, _, _, _ := inspectStreamChunk(chunk.Payload); refusal != "" {
+				recordSessionRefusal(session, groupID, model, time.Now())
+			}
 			if _, errEmit := hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: chunk.Payload, HostCallbackID: callbackID}); errEmit != nil {
 				// The client stream is gone; release the target stream. Its close result has no reader.
 				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: source, HostCallbackID: callbackID})
@@ -290,9 +333,13 @@ func skipReason(cfg pluginConfig, model string, now time.Time) (string, error) {
 	return "all credentials low on quota: " + strings.Join(exhausted, ", "), nil
 }
 
-// withModel sets the top-level "model" field the client sent to the target model. Protocols that
-// carry the model only in the path (Gemini) have no such field and are passed through unchanged.
+// withModel sets the top-level "model" field the client sent to the target model and neutralizes
+// Claude Code's refusal-retry poison nudge so a fallback model continues instead of refusing.
+// Protocols that carry the model only in the path (Gemini) have no "model" field and are passed
+// through unchanged.
 func withModel(payload []byte, model string) ([]byte, error) {
+	payload = bytes.ReplaceAll(payload, []byte(claudeRefusalRetryNudge), []byte(claudeRefusalReplacement))
+	payload = bytes.ReplaceAll(payload, []byte(strings.ReplaceAll(claudeRefusalRetryNudge, "—", "\\u2014")), []byte(claudeRefusalReplacement))
 	var body map[string]json.RawMessage
 	if errUnmarshal := json.Unmarshal(payload, &body); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode group request body: %w", errUnmarshal)

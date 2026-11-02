@@ -150,6 +150,82 @@ func TestWithModelKeepsBodiesWithoutModelField(t *testing.T) {
 	}
 }
 
+func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *testing.T) {
+	emitted := make(chan string, 16)
+	var closedStreams []string
+	var openedModels []string
+	var lastNudgeBody string
+	fakeHost(t, nil, func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case methodHostModelStream:
+			req := payload.(hostModelRequest)
+			openedModels = append(openedModels, req.Model)
+			lastNudgeBody = string(req.Body)
+			return json.Marshal(hostModelStreamResponse{StatusCode: 200, StreamID: "src-" + req.Model})
+		case methodHostModelStreamRead:
+			ref := payload.(hostStreamRef)
+			switch ref.StreamID {
+			case "src-glm-5.3-uncensored":
+				// Simulate Claude/Anthropic cyber safeguard refusal after message_start + thinking.
+				chunk := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[]}}\n\n" +
+					"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}\n\n" +
+					"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\"}}}\n\n"
+				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
+			case "src-deepseek-v4.1-flash-uncensored":
+				// Simulate an empty end_turn (e.g. Antigravity translating a safety-blocked empty response).
+				chunk := "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
+			case "src-abliterated":
+				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the answer.\"}}\n\n"
+				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
+			}
+		case methodHostModelStreamClose:
+			closedStreams = append(closedStreams, payload.(hostStreamRef).StreamID)
+			return json.RawMessage(`{}`), nil
+		case methodHostStreamEmit:
+			emitted <- string(payload.(hostStreamEmit).Payload)
+			return json.RawMessage(`{}`), nil
+		case methodHostStreamClose:
+			emitted <- "close"
+			return json.RawMessage(`{}`), nil
+		}
+		t.Errorf("unexpected host call %s", method)
+		return nil, nil
+	})
+
+	reqJSON := `{"Model":"uncensored-models","SourceFormat":"claude","Format":"claude","Stream":true,"Metadata":{"canonical_session_id":"sess-1"},"Payload":"` +
+		b64(`{"model":"uncensored-models","messages":[{"role":"user","content":"`+claudeRefusalRetryNudge+`"}]}`) + `","stream_id":"dst"}`
+	if _, errExec := executeGroupStream([]byte(reqJSON), groupConfig()); errExec != nil {
+		t.Fatalf("executeGroupStream() error = %v", errExec)
+	}
+	if got := <-emitted; !strings.Contains(got, "Here is the answer.") {
+		t.Fatalf("emitted chunk = %q, want answer from abliterated", got)
+	}
+	if got := <-emitted; got != "close" {
+		t.Fatalf("second event = %q, want close", got)
+	}
+	if strings.Join(openedModels, ",") != "glm-5.3-uncensored,deepseek-v4.1-flash-uncensored,abliterated" {
+		t.Fatalf("openedModels = %v", openedModels)
+	}
+	if strings.Join(closedStreams, ",") != "src-glm-5.3-uncensored,src-deepseek-v4.1-flash-uncensored" {
+		t.Fatalf("closedStreams = %v", closedStreams)
+	}
+	if strings.Contains(lastNudgeBody, "Do not produce that content again") || !strings.Contains(lastNudgeBody, claudeRefusalReplacement) {
+		t.Fatalf("nudge was not neutralized: %s", lastNudgeBody)
+	}
+
+	// Next request in the same session skips the two models that refused and goes straight to abliterated.
+	openedModels = nil
+	if _, errExec := executeGroupStream([]byte(reqJSON), groupConfig()); errExec != nil {
+		t.Fatalf("second executeGroupStream() error = %v", errExec)
+	}
+	<-emitted
+	<-emitted
+	if strings.Join(openedModels, ",") != "abliterated" {
+		t.Fatalf("second turn openedModels = %v, want [abliterated]", openedModels)
+	}
+}
+
 func b64(s string) string {
 	raw, _ := json.Marshal([]byte(s))
 	return strings.Trim(string(raw), `"`)
