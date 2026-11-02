@@ -480,7 +480,8 @@ func buildUIState() uiState {
 	if errHost != nil {
 		state.Error = errHost.Error()
 	}
-	if cfg.Management.URL != "" {
+	state.ManagementError = managementStatus(cfg.Management, now)
+	if state.ManagementError == "" {
 		ensureQuotaFresh(cfg.Management, snapshot.auths)
 	}
 	stateMu.Lock()

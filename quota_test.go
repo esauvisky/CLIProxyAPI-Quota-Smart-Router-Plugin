@@ -1,8 +1,11 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -436,5 +439,40 @@ func TestQuotaParsePluginQuota(t *testing.T) {
 			}
 			assertWindows(t, got, tt.want)
 		})
+	}
+}
+
+func TestRejectedManagementKeyStopsCalls(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Header.Get("Authorization") != "Bearer good" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid management key"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	t.Cleanup(func() { managementBlocked.Store(nil) })
+	creds := []hostAuth{{ID: "block-a", AuthIndex: "1", Provider: "claude"}, {ID: "block-b", AuthIndex: "2", Provider: "claude"}}
+
+	bad := managementConfig{URL: server.URL, Key: "bad", RefreshMinutes: 5}
+	refreshQuotaNow(bad, creds)
+	refreshQuotaNow(bad, creds)
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("management hits with a rejected key = %d, want 1", got)
+	}
+	if snapshot, _ := quotaFor("block-a"); !strings.Contains(snapshot.Error, "invalid management key") {
+		t.Fatalf("snapshot error = %q, want rejection reason", snapshot.Error)
+	}
+	if status := managementStatus(bad, time.Now()); !strings.Contains(status, "rejected") {
+		t.Fatalf("managementStatus = %q, want rejected", status)
+	}
+	if status := managementStatus(managementConfig{URL: server.URL, Key: "good"}, time.Now()); status != "" {
+		t.Fatalf("managementStatus for a new key = %q, want usable", status)
+	}
+	if status := managementStatus(managementConfig{URL: server.URL}, time.Now()); !strings.Contains(status, "not set") {
+		t.Fatalf("managementStatus without key = %q, want not set", status)
 	}
 }

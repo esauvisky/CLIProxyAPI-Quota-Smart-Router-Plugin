@@ -62,7 +62,7 @@ const (
 	schemaVersion uint32 = 9
 
 	pluginName    = "Reset-Aware Scheduler"
-	pluginVersion = "0.2.1"
+	pluginVersion = "0.2.2"
 	pluginAuthor  = "esauvisky"
 	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Reset-Aware-Scheduler-Plugin"
 

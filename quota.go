@@ -43,7 +43,20 @@ const (
 	quotaMonth = 30 * 24 * time.Hour
 )
 
+// managementBlock stops all management calls after CPA rejected the key: every failed attempt
+// counts toward CPA's IP ban, so retrying a bad key would lock the plugin out.
+type managementBlock struct {
+	key    string
+	until  time.Time // zero: until the key changes
+	reason string
+}
+
+// managementBanWindow is how long CPA bans an IP after repeated failed management logins.
+const managementBanWindow = 30 * time.Minute
+
 var (
+	managementBlocked atomic.Pointer[managementBlock]
+
 	quotaMu         sync.Mutex
 	quotaSnapshots  = map[string]credentialQuota{}
 	quotaRefreshing atomic.Bool
@@ -73,8 +86,38 @@ func ensureQuotaFresh(cfg managementConfig, creds []hostAuth) {
 	}()
 }
 
+// managementStatus reports why management calls are blocked for this key; empty when usable.
+func managementStatus(cfg managementConfig, now time.Time) string {
+	if cfg.Key == "" {
+		return "management.key is not set; quota collection is off"
+	}
+	block := managementBlocked.Load()
+	if block == nil || block.key != cfg.Key || (!block.until.IsZero() && now.After(block.until)) {
+		return ""
+	}
+	if block.until.IsZero() {
+		return "management key rejected, set a new management.key: " + block.reason
+	}
+	return "management API banned this IP until " + block.until.Format(time.RFC3339) + ": " + block.reason
+}
+
 // refreshQuotaNow fetches the given credentials synchronously (in parallel, bounded) and stores the results.
+// One authenticated call checks the key first so a bad key costs a single failed attempt.
 func refreshQuotaNow(cfg managementConfig, creds []hostAuth) {
+	if len(creds) == 0 {
+		return
+	}
+	var providers json.RawMessage
+	errCheck := cpaManagementJSON(cfg, http.MethodGet, "/v0/management/quota/providers", nil, &providers)
+	if errCheck != nil {
+		now := time.Now()
+		quotaMu.Lock()
+		for _, cred := range creds {
+			quotaSnapshots[cred.ID] = credentialQuota{AuthID: cred.ID, AuthIndex: cred.AuthIndex, Provider: cred.Provider, FetchedAt: now, Error: errCheck.Error()}
+		}
+		quotaMu.Unlock()
+		return
+	}
 	slots := make(chan struct{}, quotaFetchConcurrency)
 	var wg sync.WaitGroup
 	for _, cred := range creds {
@@ -145,6 +188,9 @@ func fetchCredentialQuota(cfg managementConfig, cred hostAuth) credentialQuota {
 
 // cpaManagementCall calls the CPA management API and returns the HTTP status and body.
 func cpaManagementCall(cfg managementConfig, method, path string, payload any) (int, []byte, error) {
+	if status := managementStatus(cfg, time.Now()); status != "" {
+		return 0, nil, fmt.Errorf("management %s: %s", path, status)
+	}
 	var body io.Reader
 	if payload != nil {
 		raw, errMarshal := json.Marshal(payload)
@@ -169,6 +215,12 @@ func cpaManagementCall(cfg managementConfig, method, path string, payload any) (
 	raw, errRead := io.ReadAll(resp.Body)
 	if errRead != nil {
 		return 0, nil, fmt.Errorf("management %s: read response: %w", path, errRead)
+	}
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		managementBlocked.Store(&managementBlock{key: cfg.Key, reason: snippet(raw)})
+	case http.StatusForbidden:
+		managementBlocked.Store(&managementBlock{key: cfg.Key, until: time.Now().Add(managementBanWindow), reason: snippet(raw)})
 	}
 	return resp.StatusCode, raw, nil
 }

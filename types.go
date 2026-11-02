@@ -92,6 +92,8 @@ type uiState struct {
 	Decisions   []decision       `json:"decisions"`
 	// Error is set when the host credential list could not be read.
 	Error string `json:"error,omitempty"`
+	// ManagementError explains why quota collection is not running (no key, rejected key, IP ban).
+	ManagementError string `json:"management_error,omitempty"`
 }
 
 // uiCredential joins a credential with its pool membership and quota.

@@ -398,6 +398,7 @@ const uiHTML = `<!doctype html>
 
   <div id="errorBanner" class="banner" style="display:none;"></div>
   <div id="hostErrorBanner" class="banner" style="display:none;"></div>
+  <div id="mgmtErrorBanner" class="banner" style="display:none;"></div>
 
   <section class="card">
     <div class="card-header"><h2 class="card-title">Configuration</h2></div>
@@ -761,6 +762,13 @@ function render() {
     hostBanner.style.display = 'block';
   } else {
     hostBanner.style.display = 'none';
+  }
+  const mgmtBanner = document.getElementById('mgmtErrorBanner');
+  if (state.management_error) {
+    mgmtBanner.innerHTML = '<strong>Quota collection is not running</strong>' + esc(state.management_error);
+    mgmtBanner.style.display = 'block';
+  } else {
+    mgmtBanner.style.display = 'none';
   }
   document.getElementById('versionVal').textContent = state.version;
   document.getElementById('credCount').textContent = String(state.credentials.length);
