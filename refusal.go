@@ -832,6 +832,71 @@ func buildGroupNotice(cfg pluginConfig, group modelGroup, attempts []groupAttemp
 	return fmt.Sprintf("%sswitched from %s → %s", prefix, prevModel, served)
 }
 
+func hasRefusalAttempt(attempts []groupAttempt) bool {
+	for _, a := range attempts {
+		if strings.Contains(a.Result, "refusal") || strings.Contains(a.Result, "empty response") {
+			return true
+		}
+	}
+	return false
+}
+
+// buildGroupExhaustedNotice formats a user-visible explanation when every model in the group
+// refused or failed, so the client shows the per-model chain instead of a generic "API Error".
+func buildGroupExhaustedNotice(cfg pluginConfig, group modelGroup, attempts []groupAttempt) string {
+	prefix := cfg.Features.effectiveNoticePrefix()
+	var chain []string
+	for _, attempt := range attempts {
+		detail := strings.TrimPrefix(attempt.Result, "failed: ")
+		detail = strings.TrimPrefix(detail, "skipped: ")
+		chain = append(chain, fmt.Sprintf("%s (%s)", attempt.Model, detail))
+	}
+	label := group.Name
+	if label == "" {
+		label = group.ID
+	} else if group.ID != "" && group.ID != group.Name {
+		label = fmt.Sprintf("%s (%s)", group.Name, group.ID)
+	}
+	return fmt.Sprintf("%severy model in %s failed: %s", prefix, label, strings.Join(chain, " → "))
+}
+
+func buildExhaustedNonStreamBody(format, modelID, notice string) []byte {
+	textJSON, _ := json.Marshal(notice)
+	if format == "claude" || format == "" {
+		return []byte(fmt.Sprintf(
+			`{"id":"msg_sk_exhausted","type":"message","role":"assistant","model":%q,"content":[{"type":"text","text":%s}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":1}}`,
+			modelID, string(textJSON),
+		))
+	}
+	return []byte(fmt.Sprintf(
+		`{"id":"chatcmpl_sk_exhausted","object":"chat.completion","model":%q,"choices":[{"index":0,"message":{"role":"assistant","content":%s},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1}}`,
+		modelID, string(textJSON),
+	))
+}
+
+func emitExhaustedNoticeStream(target, callbackID, format, modelID, notice string) {
+	textJSON, _ := json.Marshal(notice)
+	var sse string
+	if format == "claude" || format == "" {
+		sse = fmt.Sprintf(
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sk_exhausted\",\"type\":\"message\",\"role\":\"assistant\",\"model\":%q,\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":1}}}\n\n"+
+				"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":%s}}\n\n"+
+				"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"+
+				"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"+
+				"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+			modelID, string(textJSON),
+		)
+	} else {
+		sse = fmt.Sprintf(
+			"data: {\"id\":\"chatcmpl_sk_exhausted\",\"object\":\"chat.completion.chunk\",\"model\":%q,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":%s},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+			modelID, string(textJSON),
+		)
+	}
+	_, _ = hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: []byte(sse), HostCallbackID: callbackID})
+	closeStream(target, callbackID, "")
+}
+
 func effectiveFormat(exitFormat, sourceFormat string) string {
 	if exitFormat != "" {
 		return strings.ToLower(strings.TrimSpace(exitFormat))
