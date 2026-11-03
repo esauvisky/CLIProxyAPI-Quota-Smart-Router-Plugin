@@ -4,6 +4,12 @@
 
 **Safeguard Killer** is an ABI v1 plugin for CLIProxyAPI that neutralizes client/upstream safety classifiers, strips refusal-taint telemetry, and provides **Smart Groups** — virtual models that automatically route around safeguard refusals across providers while preserving 5-minute prompt-cache stickiness and balancing provider quota.
 
+It is built to work particularly well with **Claude Code**, **Claude models**, **OpenAI models**, **Codex**, and **Gemini models**.
+
+> **Companion Plugin:** Made to work alongside **[Reorder/Rename Models (`model-list-tweaker`)](https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin)** so you can pin your Smart Groups (`★ General Purpose`, `★ Heavy Thinkers`, `★ Uncensored Best`, etc.) to the top of `/model` and hide individual fallback-only models.
+>
+> **Important:** You must set `management_key` in the plugin's configuration (`plugins.configs.safeguard-killer.management_key`, or via the **General Settings** tab in the UI) so the plugin can query provider quota and balance credentials.
+
 ---
 
 ## 1. Safeguard & Client-Wire Adaptations

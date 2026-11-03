@@ -58,7 +58,7 @@ func managementRegistrationPayload() managementRegistration {
 			{
 				Path:        uiResourcePath,
 				Menu:        "Safeguard Killer",
-				Description: "Strip model safeguards, bypass auto-mode classifiers, and route refusal-evasion Smart Groups with 5m cache stickiness and quota balancing.",
+				Description: "Neutralize model safeguards and auto-mode classifiers across Claude Code, Claude, OpenAI/Codex, and Gemini models, and route refusal-evasion Smart Groups with 5m cache stickiness. Set management_key in the plugin config. Made to work alongside Reorder/Rename Models (https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin).",
 			},
 		},
 	}
@@ -446,7 +446,7 @@ const uiHTML = `<!doctype html>
 <main class="main-content">
   <header class="page-header">
     <h1 class="page-title">Safeguard Killer</h1>
-    <p class="page-desc">Neutralize model safeguards and auto-mode classifiers, route around refusals with Smart Groups (5m cache-sticky failover chains), and balance provider quota.</p>
+    <p class="page-desc">Neutralize model safeguards and auto-mode classifiers across Claude Code, Claude, OpenAI/Codex, and Gemini models, route around refusals with Smart Groups (5m cache-sticky failover chains), and balance provider quota. Requires <span class="mono">management_key</span> in the plugin config. Made to work alongside <a href="https://github.com/esauvisky/CLIProxyAPI-Model-List-Tweaker-Plugin" target="_blank" rel="noopener" style="color:var(--text-primary);">Reorder/Rename Models</a>.</p>
   </header>
 
   <div class="status-bar">

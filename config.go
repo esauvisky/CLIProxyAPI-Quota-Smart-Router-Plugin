@@ -225,7 +225,7 @@ func pluginRegistration() registration {
 			GitHubRepository: pluginRepo,
 			Logo:             pluginLogo,
 			ConfigFields: []configField{
-				{Name: "management_key", Type: "string", Description: "CPA management key used to read provider quota."},
+				{Name: "management_key", Type: "string", Description: "Required: CPA management key used to read provider quota and save settings from the UI."},
 				{Name: "min_remaining", Type: "number", Default: 0.02, Description: "Quota fraction (0-1) every window of a credential must keep for it to be used."},
 				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a credential session binding may re-rank."},
 				{Name: "groups", Type: "array", Description: "Smart Groups ({id, name, strategy, models}): virtual models that automatically route around safeguard refusals, errors, and low quota with 5m cache stickiness."},
