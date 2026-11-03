@@ -122,13 +122,13 @@ func authsByID(snapshot hostSnapshot, ids []string) ([]hostAuth, error) {
 
 // pick balances models served by two or more credentials: a session keeps its credential while
 // prompts keep coming, and a new or idle session goes to the credential with the highest
-// weight * remaining / hours_to_reset. Without quota data for any candidate the host's own
+// remaining / hours_to_reset. Without quota data for any candidate the host's own
 // selector decides.
 func pick(req schedulerPickRequest, cfg pluginConfig, now time.Time) (schedulerPickResponse, error) {
 	if len(req.Candidates) < 2 {
 		return schedulerPickResponse{Handled: false}, nil
 	}
-	if cfg.Management.Key == "" {
+	if cfg.ManagementKey == "" {
 		return schedulerPickResponse{Handled: false}, nil
 	}
 	requested, okRequested := req.Options.Metadata[metadataRequestedModel].(string)
@@ -147,7 +147,7 @@ func pick(req schedulerPickRequest, cfg pluginConfig, now time.Time) (schedulerP
 	if errAuths != nil {
 		return schedulerPickResponse{}, errAuths
 	}
-	ensureQuotaFresh(cfg.Management, auths)
+	ensureQuotaFresh(cfg.ManagementKey, auths)
 
 	ranking := rankCredentials(cfg, auths, req.Model, now)
 	session := sessionKey(req.Options.Metadata)
@@ -202,13 +202,18 @@ func pruneSessions(now time.Time) {
 			delete(sessions, key)
 		}
 	}
+	for key, binding := range groupSessions {
+		if now.Sub(binding.LastSeen) > sessionRetention {
+			delete(groupSessions, key)
+		}
+	}
 }
 
 // rankCredentials evaluates credentials for a model, best first; excluded ones go last.
 func rankCredentials(cfg pluginConfig, auths []hostAuth, model string, now time.Time) []rankEntry {
 	ranking := make([]rankEntry, 0, len(auths))
 	for _, auth := range auths {
-		entry := rankEntry{AuthID: auth.ID, Provider: auth.Provider, Weight: cfg.weight(auth.ID)}
+		entry := rankEntry{AuthID: auth.ID, Provider: auth.Provider}
 		rateCredential(&entry, model, cfg.MinRemaining, now)
 		ranking = append(ranking, entry)
 	}
@@ -262,7 +267,7 @@ func rateCredential(entry *rankEntry, model string, minRemaining float64, now ti
 	entry.Window = governing.Name
 	entry.Remaining = remaining
 	entry.HoursToReset = hours
-	entry.Rate = entry.Weight * remaining / hours
+	entry.Rate = remaining / hours
 }
 
 // rolledWindow applies resets that happened since the snapshot: a passed reset with a known
@@ -316,20 +321,20 @@ func containsString(values []string, target string) bool {
 func buildUIState() uiState {
 	now := time.Now()
 	cfg := currentConfig()
-	state := uiState{Version: pluginVersion, Now: now, Config: cfg, ManagementError: managementStatus(cfg.Management, now)}
+	state := uiState{Version: pluginVersion, Now: now, Config: cfg, ManagementError: managementStatus(cfg.ManagementKey, now)}
 	snapshot, errHost := hostState(now)
 	if errHost != nil {
 		state.Error = errHost.Error()
 	}
 	if state.ManagementError == "" {
-		ensureQuotaFresh(cfg.Management, snapshot.auths)
+		ensureQuotaFresh(cfg.ManagementKey, snapshot.auths)
 	}
 	models := make(map[string]bool)
 	stateMu.Lock()
 	defer stateMu.Unlock()
 	for _, auth := range snapshot.auths {
 		quota, hasQuota := quotaFor(auth.ID)
-		state.Credentials = append(state.Credentials, uiCredential{Auth: auth, Weight: cfg.weight(auth.ID), Quota: quota, HasQuota: hasQuota, Models: snapshot.models[auth.ID]})
+		state.Credentials = append(state.Credentials, uiCredential{Auth: auth, Quota: quota, HasQuota: hasQuota, Models: snapshot.models[auth.ID]})
 		for _, model := range snapshot.models[auth.ID] {
 			models[model] = true
 		}
@@ -339,6 +344,9 @@ func buildUIState() uiState {
 	}
 	sort.Strings(state.Models)
 	for _, binding := range sessions {
+		state.Sessions = append(state.Sessions, *binding)
+	}
+	for _, binding := range groupSessions {
 		state.Sessions = append(state.Sessions, *binding)
 	}
 	sort.Slice(state.Sessions, func(i, j int) bool { return state.Sessions[i].LastSeen.After(state.Sessions[j].LastSeen) })

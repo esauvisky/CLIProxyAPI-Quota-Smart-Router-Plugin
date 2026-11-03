@@ -62,11 +62,11 @@ const (
 	abiVersion    uint32 = 1
 	schemaVersion uint32 = 9
 
-	pluginName    = "Quota Smart Router"
-	pluginVersion = "0.4.5"
+	pluginName    = "Safeguard Killer"
+	pluginVersion = "0.5.0"
 	pluginAuthor  = "esauvisky"
-	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin"
-	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin/main/assets/logo.png"
+	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin"
+	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin/main/assets/logo.png"
 
 	methodPluginRegister     = "plugin.register"
 	methodPluginReconfigure  = "plugin.reconfigure"

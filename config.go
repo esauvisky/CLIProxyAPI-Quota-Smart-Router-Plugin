@@ -57,18 +57,33 @@ type pluginConfig struct {
 	// MinRemaining is the fraction every applicable quota window must keep for a credential to be used.
 	MinRemaining float64 `yaml:"min_remaining" json:"min_remaining"`
 	// IdleMinutes is how long a session may go without a prompt before it can move to another credential.
-	IdleMinutes int              `yaml:"idle_minutes" json:"idle_minutes"`
-	Management  managementConfig `yaml:"management" json:"management"`
-	// Weights scales a credential's rate by auth ID (plan size); unlisted credentials weigh 1.
-	Weights map[string]float64 `yaml:"weights" json:"weights"`
-	Groups  []modelGroup       `yaml:"groups" json:"groups"`
+	IdleMinutes   int           `yaml:"idle_minutes" json:"idle_minutes"`
+	ManagementKey string        `yaml:"management_key" json:"-"`
+	Groups        []modelGroup  `yaml:"groups" json:"groups"`
+	Features      featureConfig `yaml:"features" json:"features"`
+	// LegacyManagement reads existing management.key configs on upgrade.
+	LegacyManagement struct {
+		Key string `yaml:"key" json:"key"`
+	} `yaml:"management,omitempty" json:"-"`
+}
+// featureConfig controls safeguard and client-wire adaptations.
+type featureConfig struct {
+	FallbackOnRefusal             bool   `yaml:"fallback_on_refusal" json:"fallback_on_refusal"`
+	ClientFallbackNotices         bool   `yaml:"client_fallback_notices" json:"client_fallback_notices"`
+	NoticePrefix                  string `yaml:"notice_prefix" json:"notice_prefix"`
+	RewriteCyberSystemPrompt      bool   `yaml:"rewrite_cyber_system_prompt" json:"rewrite_cyber_system_prompt"`
+	StripRefusalTaintHeaders      bool   `yaml:"strip_refusal_taint_headers" json:"strip_refusal_taint_headers"`
+	DisableUpstreamServerFallback bool   `yaml:"disable_upstream_server_fallback" json:"disable_upstream_server_fallback"`
+	BypassAutoModeClassifier      bool   `yaml:"bypass_auto_mode_classifier" json:"bypass_auto_mode_classifier"`
+	NeutralizeClassifierStopNudge bool   `yaml:"neutralize_classifier_stop_nudges" json:"neutralize_classifier_stop_nudges"`
+	StripRestrictiveReminders     bool   `yaml:"strip_restrictive_system_reminders" json:"strip_restrictive_system_reminders"`
 }
 
-// managementConfig reaches the CPA management API, which proxies provider usage endpoints.
-type managementConfig struct {
-	URL            string `yaml:"url" json:"url"`
-	Key            string `yaml:"key" json:"-"`
-	RefreshMinutes int    `yaml:"refresh_minutes" json:"refresh_minutes"`
+func (f featureConfig) effectiveNoticePrefix() string {
+	if f.NoticePrefix != "" {
+		return f.NoticePrefix
+	}
+	return defaultNoticePrefix
 }
 
 // modelGroup is a virtual model that tries its target models in order until one succeeds.
@@ -90,7 +105,17 @@ func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
 		MinRemaining: 0.02,
 		IdleMinutes:  5,
-		Management:   managementConfig{URL: "http://127.0.0.1:8317", RefreshMinutes: 5},
+		Features: featureConfig{
+			FallbackOnRefusal:             true,
+			ClientFallbackNotices:         true,
+			NoticePrefix:                  defaultNoticePrefix,
+			RewriteCyberSystemPrompt:      true,
+			StripRefusalTaintHeaders:      true,
+			DisableUpstreamServerFallback: true,
+			BypassAutoModeClassifier:      true,
+			NeutralizeClassifierStopNudge: true,
+			StripRestrictiveReminders:     true,
+		},
 	}
 }
 
@@ -111,6 +136,9 @@ func configurePlugin(raw []byte) error {
 			return errUnmarshal
 		}
 	}
+	if cfg.ManagementKey == "" && cfg.LegacyManagement.Key != "" {
+		cfg.ManagementKey = cfg.LegacyManagement.Key
+	}
 	if errValidate := validateConfig(cfg); errValidate != nil {
 		return errValidate
 	}
@@ -124,14 +152,6 @@ func validateConfig(cfg pluginConfig) error {
 	}
 	if cfg.IdleMinutes <= 0 {
 		return fmt.Errorf("idle_minutes must be positive, got %d", cfg.IdleMinutes)
-	}
-	if cfg.Management.RefreshMinutes <= 0 {
-		return fmt.Errorf("management.refresh_minutes must be positive, got %d", cfg.Management.RefreshMinutes)
-	}
-	for authID, weight := range cfg.Weights {
-		if weight <= 0 {
-			return fmt.Errorf("weights[%s] must be positive, got %v", authID, weight)
-		}
 	}
 	ids := make(map[string]bool, len(cfg.Groups))
 	for index, group := range cfg.Groups {
@@ -159,13 +179,6 @@ func validateConfig(cfg pluginConfig) error {
 	return nil
 }
 
-func (cfg pluginConfig) weight(authID string) float64 {
-	if weight, ok := cfg.Weights[authID]; ok {
-		return weight
-	}
-	return 1
-}
-
 func (cfg pluginConfig) group(id string) (modelGroup, bool) {
 	for _, group := range cfg.Groups {
 		if group.ID == id {
@@ -185,11 +198,11 @@ func pluginRegistration() registration {
 			GitHubRepository: pluginRepo,
 			Logo:             pluginLogo,
 			ConfigFields: []configField{
+				{Name: "management_key", Type: "string", Description: "CPA management key used to read provider quota."},
 				{Name: "min_remaining", Type: "number", Default: 0.02, Description: "Quota fraction (0-1) every window of a credential must keep for it to be used."},
 				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a session may move to another credential."},
-				{Name: "management", Type: "object", Description: "CPA management API used to read provider quota ({url, key, refresh_minutes})."},
-				{Name: "weights", Type: "object", Description: "Per-credential rate multiplier by auth ID, e.g. 20 for Max 20x (default 1)."},
 				{Name: "groups", Type: "array", Description: "Model groups ({id, name, models}): a virtual model that tries its models in order until one succeeds."},
+				{Name: "features", Type: "object", Description: "Safeguard and client-wire adaptation toggles and custom notice_prefix."},
 			},
 		},
 		Capabilities: registrationCapabilities{

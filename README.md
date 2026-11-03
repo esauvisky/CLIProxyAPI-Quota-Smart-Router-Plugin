@@ -1,6 +1,6 @@
-# CLIProxyAPI Quota Smart Router Plugin
+# CLIProxyAPI Safeguard Killer Plugin
 
-<img src="assets/logo.png" width="96" align="right" alt="Quota Smart Router logo">
+<img src="assets/logo.png" width="96" align="right" alt="Safeguard Killer logo">
 
 This ABI v1 plugin works on stock CLIProxyAPI and does two things:
 
@@ -74,7 +74,7 @@ edited there and saved to the plugin's config.
 make test
 ```
 
-Produces `build/quota-smart-router.so`.
+Produces `build/safeguard-killer.so`.
 
 ## Install from the management interface
 
@@ -84,7 +84,7 @@ Add this registry URL to `plugins.store-sources`:
 plugins:
   enabled: true
   store-sources:
-    - "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin/main/registry.json"
+    - "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin/main/registry.json"
 ```
 
 Only one scheduler plugin is active at a time.
@@ -95,16 +95,11 @@ Only one scheduler plugin is active at a time.
 plugins:
   enabled: true
   configs:
-    quota-smart-router:
+    safeguard-killer:
       enabled: true
+      management_key: "<management key>"
       min_remaining: 0.02
       idle_minutes: 5
-      management:
-        url: "http://127.0.0.1:8317"
-        key: "<management key>"
-        refresh_minutes: 5
-      weights:
-        "claude-82849846-claude1@pokemod.dev.json": 20
       groups:
         - id: "uncensored-models"
           name: "Uncensored"

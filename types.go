@@ -47,12 +47,11 @@ type credentialQuota struct {
 type rankEntry struct {
 	AuthID    string  `json:"auth_id"`
 	Provider  string  `json:"provider"`
-	Weight    float64 `json:"weight"`
 	Window    string  `json:"window,omitempty"`
 	Remaining float64 `json:"remaining"`
 	// HoursToReset is the time until the governing window resets.
 	HoursToReset float64 `json:"hours_to_reset"`
-	// Rate is weight * remaining / hours_to_reset; higher wins.
+	// Rate is remaining / hours_to_reset; higher wins.
 	Rate float64 `json:"rate"`
 	// Excluded explains why the credential was not eligible; empty when eligible.
 	Excluded string `json:"excluded,omitempty"`
@@ -100,11 +99,10 @@ type uiState struct {
 	ManagementError string `json:"management_error,omitempty"`
 }
 
-// uiCredential joins a credential with its weight, models and quota.
+// uiCredential joins a credential with its models and quota.
 type uiCredential struct {
-	Auth   hostAuth        `json:"auth"`
-	Weight float64         `json:"weight"`
-	Quota  credentialQuota `json:"quota"`
+	Auth  hostAuth        `json:"auth"`
+	Quota credentialQuota `json:"quota"`
 	// HasQuota reports whether Quota holds a fetched snapshot.
 	HasQuota bool     `json:"has_quota"`
 	Models   []string `json:"models"`

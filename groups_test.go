@@ -175,8 +175,8 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 					"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\"}}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-deepseek-v4.1-flash-uncensored":
-				// Simulate a GPT soft-pivot refusal ("I can help with ..., but not with ...").
-				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I can help with an authorized security assessment, but not with breaking into Niantic’s live site without clear permission and scope.\"}}\n\n"
+				// Simulate an authorization-context gate / interrogation refusal.
+				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I can help with this, but I need to know the context first. Stealthing Frida against RASP is a detection-evasion request, and I need a clear authorization context before I work on it.\"}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-abliterated":
 				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the answer.\"}}\n\n"
@@ -241,11 +241,62 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 		}
 		allEmitted.WriteString(ev)
 	}
-	if strings.Contains(allEmitted.String(), noticePrefix) {
+	if strings.Contains(allEmitted.String(), defaultNoticePrefix) {
 		t.Fatalf("second turn on same model unexpectedly repeated notice: %q", allEmitted.String())
 	}
 	if strings.Join(openedModels, ",") != "abliterated" {
 		t.Fatalf("second turn openedModels = %v, want [abliterated]", openedModels)
+	}
+
+	// Simulate 5+ minutes passing (server prompt cache expired): the next request starts from
+	// the top model (glm-5.3-uncensored) again instead of staying pinned to abliterated.
+	stateMu.Lock()
+	for _, b := range groupSessions {
+		b.LastSeen = time.Now().Add(-6 * time.Minute)
+		b.IdleExpiresAt = b.LastSeen.Add(groupCacheTTL)
+	}
+	stateMu.Unlock()
+	openedModels = nil
+	if _, errExec := executeGroupStream([]byte(reqJSON), groupConfig()); errExec != nil {
+		t.Fatalf("third executeGroupStream() after 5m expiry error = %v", errExec)
+	}
+	for {
+		if <-emitted == "close" {
+			break
+		}
+	}
+	if strings.Join(openedModels, ",") != "glm-5.3-uncensored,deepseek-v4.1-flash-uncensored,abliterated" {
+		t.Fatalf("after 5m cache expiry openedModels = %v, want full chain from top", openedModels)
+	}
+}
+
+func TestAutoModeClassifierShortCircuitAndSafeguardSanitization(t *testing.T) {
+	resetHostState(t)
+	classifierReq := `{"Headers":{"Anthropic-Beta":["dangerous-tool-use-2026-09-03,oauth-2025-04-20"],"X-Is-Refusal-Fallback":["true"]},"Body":"` +
+		b64(`{"model":"claude-sonnet-5-5","stop_sequences":["</severity>"],"messages":[{"role":"user","content":"<transcript>\nfoo\n</transcript>\nRespond with <severity>N</severity> ONLY."}]}`) + `"}`
+	raw, errIntercept := handleRequestIntercept([]byte(classifierReq))
+	if errIntercept != nil {
+		t.Fatalf("handleRequestIntercept() error = %v", errIntercept)
+	}
+	var resp requestInterceptResponse
+	decodeOK(t, raw, &resp)
+	if !resp.Terminate || resp.StatusCode != 200 || !strings.Contains(string(resp.ResponseBody), "<severity>0</severity>") {
+		t.Fatalf("classifier intercept = %+v body=%s", resp, resp.ResponseBody)
+	}
+
+	normalReq := `{"Headers":{"Anthropic-Beta":["dangerous-tool-use-2026-09-03,server-side-fallback-2026-06-01,oauth-2025-04-20"],"X-Cc-Atis":["v1.taint"]},"Body":"` +
+		b64(`{"model":"claude-opus-5-5","safeguards":[{"type":"dangerous_tool_use"}],"fallbacks":"default","system":[{"type":"text","text":"`+claudeCyberGatePrompt+`"}],"messages":[{"role":"user","content":"hi"}]}`) + `"}`
+	raw, errIntercept = handleRequestIntercept([]byte(normalReq))
+	if errIntercept != nil {
+		t.Fatalf("handleRequestIntercept(normal) error = %v", errIntercept)
+	}
+	resp = requestInterceptResponse{}
+	decodeOK(t, raw, &resp)
+	if resp.Terminate || strings.Contains(string(resp.Body), `"safeguards"`) || strings.Contains(string(resp.Body), `"fallbacks"`) || strings.Contains(string(resp.Body), "require clear authorization context") {
+		t.Fatalf("sanitized body = %s", resp.Body)
+	}
+	if got := resp.Headers.Get("Anthropic-Beta"); got != "oauth-2025-04-20" {
+		t.Fatalf("Anthropic-Beta = %q, want oauth-2025-04-20", got)
 	}
 }
 

@@ -56,6 +56,8 @@ const managementBanWindow = 30 * time.Minute
 
 var (
 	managementBlocked atomic.Pointer[managementBlock]
+	managementBaseURL = "http://127.0.0.1:8317"
+	quotaRefreshAge   = 5 * time.Minute
 
 	quotaMu         sync.Mutex
 	quotaSnapshots  = map[string]credentialQuota{}
@@ -64,15 +66,14 @@ var (
 )
 
 // ensureQuotaFresh starts a background refresh of every given credential whose snapshot is older than
-// cfg.RefreshMinutes (or missing). It never blocks and never starts a second refresh while one runs.
-func ensureQuotaFresh(cfg managementConfig, creds []hostAuth) {
-	maxAge := time.Duration(cfg.RefreshMinutes) * time.Minute
+// quotaRefreshAge (or missing). It never blocks and never starts a second refresh while one runs.
+func ensureQuotaFresh(key string, creds []hostAuth) {
 	now := time.Now()
 	var stale []hostAuth
 	quotaMu.Lock()
 	for _, cred := range creds {
 		snapshot, ok := quotaSnapshots[cred.ID]
-		if !ok || now.Sub(snapshot.FetchedAt) >= maxAge {
+		if !ok || now.Sub(snapshot.FetchedAt) >= quotaRefreshAge {
 			stale = append(stale, cred)
 		}
 	}
@@ -82,33 +83,33 @@ func ensureQuotaFresh(cfg managementConfig, creds []hostAuth) {
 	}
 	go func() {
 		defer quotaRefreshing.Store(false)
-		refreshQuotaNow(cfg, stale)
+		refreshQuotaNow(key, stale)
 	}()
 }
 
 // managementStatus reports why management calls are blocked for this key; empty when usable.
-func managementStatus(cfg managementConfig, now time.Time) string {
-	if cfg.Key == "" {
-		return "management.key is not set; quota collection is off"
+func managementStatus(key string, now time.Time) string {
+	if key == "" {
+		return "management_key is not set; quota collection is off"
 	}
 	block := managementBlocked.Load()
-	if block == nil || block.key != cfg.Key || (!block.until.IsZero() && now.After(block.until)) {
+	if block == nil || block.key != key || (!block.until.IsZero() && now.After(block.until)) {
 		return ""
 	}
 	if block.until.IsZero() {
-		return "management key rejected, set a new management.key: " + block.reason
+		return "management key rejected, set a new management_key: " + block.reason
 	}
 	return "management API banned this IP until " + block.until.Format(time.RFC3339) + ": " + block.reason
 }
 
 // refreshQuotaNow fetches the given credentials synchronously (in parallel, bounded) and stores the results.
 // One authenticated call checks the key first so a bad key costs a single failed attempt.
-func refreshQuotaNow(cfg managementConfig, creds []hostAuth) {
+func refreshQuotaNow(key string, creds []hostAuth) {
 	if len(creds) == 0 {
 		return
 	}
 	var providers json.RawMessage
-	errCheck := cpaManagementJSON(cfg, http.MethodGet, "/v0/management/quota/providers", nil, &providers)
+	errCheck := cpaManagementJSON(key, http.MethodGet, "/v0/management/quota/providers", nil, &providers)
 	if errCheck != nil {
 		now := time.Now()
 		quotaMu.Lock()
@@ -126,7 +127,7 @@ func refreshQuotaNow(cfg managementConfig, creds []hostAuth) {
 		go func(cred hostAuth) {
 			defer wg.Done()
 			defer func() { <-slots }()
-			snapshot := fetchCredentialQuota(cfg, cred)
+			snapshot := fetchCredentialQuota(key, cred)
 			quotaMu.Lock()
 			quotaSnapshots[cred.ID] = snapshot
 			quotaMu.Unlock()
@@ -145,7 +146,7 @@ func quotaFor(authID string) (credentialQuota, bool) {
 
 // fetchCredentialQuota collects one credential's windows; a failure is returned as a snapshot
 // with Error set and no windows.
-func fetchCredentialQuota(cfg managementConfig, cred hostAuth) credentialQuota {
+func fetchCredentialQuota(key string, cred hostAuth) credentialQuota {
 	snapshot := credentialQuota{
 		AuthID:    cred.ID,
 		AuthIndex: cred.AuthIndex,
@@ -158,22 +159,22 @@ func fetchCredentialQuota(cfg managementConfig, cred hostAuth) credentialQuota {
 	switch cred.Provider {
 	case "claude":
 		snapshot.Source = "claude-oauth-usage"
-		windows, plan, errFetch = fetchClaudeQuota(cfg, cred)
+		windows, plan, errFetch = fetchClaudeQuota(key, cred)
 	case "codex":
 		snapshot.Source = "codex-wham-usage"
-		windows, plan, errFetch = fetchCodexQuota(cfg, cred)
+		windows, plan, errFetch = fetchCodexQuota(key, cred)
 	case "antigravity":
 		snapshot.Source = "antigravity-quota-summary"
-		windows, errFetch = fetchAntigravityQuota(cfg, cred)
+		windows, errFetch = fetchAntigravityQuota(key, cred)
 	case "kimi", "kimi.com", "kimi-ai", "kimi.ai":
 		snapshot.Source = "kimi-usages"
-		windows, errFetch = fetchKimiQuota(cfg, cred)
+		windows, errFetch = fetchKimiQuota(key, cred)
 	case "xai":
 		snapshot.Source = "xai-billing"
-		windows, errFetch = fetchXaiQuota(cfg, cred)
+		windows, errFetch = fetchXaiQuota(key, cred)
 	default:
 		snapshot.Source = "cpa-quota-fetch"
-		windows, plan, errFetch = fetchPluginQuota(cfg, cred)
+		windows, plan, errFetch = fetchPluginQuota(key, cred)
 	}
 	if errFetch != nil {
 		snapshot.Error = errFetch.Error()
@@ -187,8 +188,8 @@ func fetchCredentialQuota(cfg managementConfig, cred hostAuth) credentialQuota {
 // --- management transport ---
 
 // cpaManagementCall calls the CPA management API and returns the HTTP status and body.
-func cpaManagementCall(cfg managementConfig, method, path string, payload any) (int, []byte, error) {
-	if status := managementStatus(cfg, time.Now()); status != "" {
+func cpaManagementCall(key, method, path string, payload any) (int, []byte, error) {
+	if status := managementStatus(key, time.Now()); status != "" {
 		return 0, nil, fmt.Errorf("management %s: %s", path, status)
 	}
 	var body io.Reader
@@ -199,11 +200,11 @@ func cpaManagementCall(cfg managementConfig, method, path string, payload any) (
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, errReq := http.NewRequest(method, strings.TrimRight(cfg.URL, "/")+path, body)
+	req, errReq := http.NewRequest(method, strings.TrimRight(managementBaseURL, "/")+path, body)
 	if errReq != nil {
 		return 0, nil, fmt.Errorf("management %s: %w", path, errReq)
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.Key)
+	req.Header.Set("Authorization", "Bearer "+key)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -218,16 +219,16 @@ func cpaManagementCall(cfg managementConfig, method, path string, payload any) (
 	}
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
-		managementBlocked.Store(&managementBlock{key: cfg.Key, reason: snippet(raw)})
+		managementBlocked.Store(&managementBlock{key: key, reason: snippet(raw)})
 	case http.StatusForbidden:
-		managementBlocked.Store(&managementBlock{key: cfg.Key, until: time.Now().Add(managementBanWindow), reason: snippet(raw)})
+		managementBlocked.Store(&managementBlock{key: key, until: time.Now().Add(managementBanWindow), reason: snippet(raw)})
 	}
 	return resp.StatusCode, raw, nil
 }
 
 // cpaManagementJSON calls the management API, requires HTTP 200 and decodes the body into out.
-func cpaManagementJSON(cfg managementConfig, method, path string, payload, out any) error {
-	status, raw, errCall := cpaManagementCall(cfg, method, path, payload)
+func cpaManagementJSON(key, method, path string, payload, out any) error {
+	status, raw, errCall := cpaManagementCall(key, method, path, payload)
 	if errCall != nil {
 		return errCall
 	}
@@ -256,10 +257,10 @@ type apiCallResponse struct {
 
 // providerCall sends one provider request through POST /v0/management/api-call with the
 // credential's token injected by CPA, and requires a 2xx upstream status.
-func providerCall(cfg managementConfig, cred hostAuth, method, target string, header map[string]string, data string) ([]byte, error) {
+func providerCall(key string, cred hostAuth, method, target string, header map[string]string, data string) ([]byte, error) {
 	var resp apiCallResponse
 	request := apiCallRequest{AuthIndex: cred.AuthIndex, Method: method, URL: target, Header: header, Data: data}
-	if errCall := cpaManagementJSON(cfg, http.MethodPost, "/v0/management/api-call", request, &resp); errCall != nil {
+	if errCall := cpaManagementJSON(key, http.MethodPost, "/v0/management/api-call", request, &resp); errCall != nil {
 		return nil, errCall
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -280,14 +281,14 @@ func snippet(raw []byte) string {
 
 // credentialModels lists the model IDs CPA serves through the credential, for scoping
 // model-specific windows.
-func credentialModels(cfg managementConfig, cred hostAuth) ([]string, error) {
+func credentialModels(key string, cred hostAuth) ([]string, error) {
 	var resp struct {
 		Models []struct {
 			ID string `json:"id"`
 		} `json:"models"`
 	}
 	path := "/v0/management/auth-files/models?name=" + url.QueryEscape(cred.ID)
-	if errCall := cpaManagementJSON(cfg, http.MethodGet, path, nil, &resp); errCall != nil {
+	if errCall := cpaManagementJSON(key, http.MethodGet, path, nil, &resp); errCall != nil {
 		return nil, errCall
 	}
 	models := make([]string, 0, len(resp.Models))
@@ -306,12 +307,12 @@ type authFileEntry struct {
 	} `json:"id_token"`
 }
 
-func credentialAuthFile(cfg managementConfig, cred hostAuth) (authFileEntry, error) {
+func credentialAuthFile(key string, cred hostAuth) (authFileEntry, error) {
 	var resp struct {
 		Files []authFileEntry `json:"files"`
 	}
 	path := "/v0/management/auth-files?auth_index=" + url.QueryEscape(cred.AuthIndex)
-	if errCall := cpaManagementJSON(cfg, http.MethodGet, path, nil, &resp); errCall != nil {
+	if errCall := cpaManagementJSON(key, http.MethodGet, path, nil, &resp); errCall != nil {
 		return authFileEntry{}, errCall
 	}
 	if len(resp.Files) != 1 {
@@ -407,7 +408,7 @@ func modelsContaining(models []string, family string) []string {
 
 // --- claude ---
 
-func fetchClaudeQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, string, error) {
+func fetchClaudeQuota(key string, cred hostAuth) ([]quotaWindow, string, error) {
 	header := map[string]string{
 		"User-Agent":     claudeUserAgent,
 		"Authorization":  "Bearer $TOKEN$",
@@ -415,15 +416,15 @@ func fetchClaudeQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, strin
 		"anthropic-beta": "oauth-2025-04-20",
 		"Accept":         "application/json",
 	}
-	usage, errUsage := providerCall(cfg, cred, http.MethodGet, claudeUsageURL, header, "")
+	usage, errUsage := providerCall(key, cred, http.MethodGet, claudeUsageURL, header, "")
 	if errUsage != nil {
 		return nil, "", fmt.Errorf("claude usage: %w", errUsage)
 	}
-	profile, errProfile := providerCall(cfg, cred, http.MethodGet, claudeProfileURL, header, "")
+	profile, errProfile := providerCall(key, cred, http.MethodGet, claudeProfileURL, header, "")
 	if errProfile != nil {
 		return nil, "", fmt.Errorf("claude profile: %w", errProfile)
 	}
-	models, errModels := credentialModels(cfg, cred)
+	models, errModels := credentialModels(key, cred)
 	if errModels != nil {
 		return nil, "", fmt.Errorf("claude: %w", errModels)
 	}
@@ -620,8 +621,8 @@ func parseClaudeProfile(body []byte) (string, error) {
 
 // --- codex ---
 
-func fetchCodexQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, string, error) {
-	entry, errEntry := credentialAuthFile(cfg, cred)
+func fetchCodexQuota(key string, cred hostAuth) ([]quotaWindow, string, error) {
+	entry, errEntry := credentialAuthFile(key, cred)
 	if errEntry != nil {
 		return nil, "", fmt.Errorf("codex: %w", errEntry)
 	}
@@ -635,11 +636,11 @@ func fetchCodexQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, string
 	if entry.IDToken != nil && entry.IDToken.ChatgptAccountID != "" {
 		header["Chatgpt-Account-Id"] = entry.IDToken.ChatgptAccountID
 	}
-	body, errUsage := providerCall(cfg, cred, http.MethodGet, codexUsageURL, header, "")
+	body, errUsage := providerCall(key, cred, http.MethodGet, codexUsageURL, header, "")
 	if errUsage != nil {
 		return nil, "", fmt.Errorf("codex usage: %w", errUsage)
 	}
-	models, errModels := credentialModels(cfg, cred)
+	models, errModels := credentialModels(key, cred)
 	if errModels != nil {
 		return nil, "", fmt.Errorf("codex: %w", errModels)
 	}
@@ -759,8 +760,8 @@ func codexWindowName(period time.Duration) string {
 
 // --- antigravity ---
 
-func fetchAntigravityQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, error) {
-	entry, errEntry := credentialAuthFile(cfg, cred)
+func fetchAntigravityQuota(key string, cred hostAuth) ([]quotaWindow, error) {
+	entry, errEntry := credentialAuthFile(key, cred)
 	if errEntry != nil {
 		return nil, fmt.Errorf("antigravity: %w", errEntry)
 	}
@@ -776,11 +777,11 @@ func fetchAntigravityQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, 
 		"Content-Type":  "application/json",
 		"User-Agent":    antigravityUserAgent,
 	}
-	body, errQuota := providerCall(cfg, cred, http.MethodPost, antigravityQuotaURL, header, string(data))
+	body, errQuota := providerCall(key, cred, http.MethodPost, antigravityQuotaURL, header, string(data))
 	if errQuota != nil {
 		return nil, fmt.Errorf("antigravity quota: %w", errQuota)
 	}
-	models, errModels := credentialModels(cfg, cred)
+	models, errModels := credentialModels(key, cred)
 	if errModels != nil {
 		return nil, fmt.Errorf("antigravity: %w", errModels)
 	}
@@ -867,7 +868,7 @@ func bucketWindow(provider, group, window string, remaining float64, resetTime s
 
 // --- kimi ---
 
-func fetchKimiQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, error) {
+func fetchKimiQuota(key string, cred hostAuth) ([]quotaWindow, error) {
 	// CPA routes kimi-ai/kimi.ai credentials to kimi.ai and kimi/kimi.com to kimi.com. A file that
 	// overrides its domain with a domain/base_url field is not visible here and fails with the
 	// upstream's auth error.
@@ -875,7 +876,7 @@ func fetchKimiQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, error) 
 	if cred.Provider == "kimi-ai" || cred.Provider == "kimi.ai" {
 		target = kimiAIUsageURL
 	}
-	body, errUsage := providerCall(cfg, cred, http.MethodGet, target, map[string]string{"Authorization": "Bearer $TOKEN$"}, "")
+	body, errUsage := providerCall(key, cred, http.MethodGet, target, map[string]string{"Authorization": "Bearer $TOKEN$"}, "")
 	if errUsage != nil {
 		return nil, fmt.Errorf("kimi usage: %w", errUsage)
 	}
@@ -1056,7 +1057,7 @@ func firstNonBlank(values ...string) string {
 
 // --- xai ---
 
-func fetchXaiQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, error) {
+func fetchXaiQuota(key string, cred hostAuth) ([]quotaWindow, error) {
 	header := map[string]string{
 		"Authorization":         "Bearer $TOKEN$",
 		"x-xai-token-auth":      "xai-grok-cli",
@@ -1064,11 +1065,11 @@ func fetchXaiQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, error) {
 		"accept":                "*/*",
 		"user-agent":            xaiUserAgent,
 	}
-	weekly, errWeekly := providerCall(cfg, cred, http.MethodGet, xaiBillingWeeklyURL, header, "")
+	weekly, errWeekly := providerCall(key, cred, http.MethodGet, xaiBillingWeeklyURL, header, "")
 	if errWeekly != nil {
 		return nil, fmt.Errorf("xai weekly billing: %w", errWeekly)
 	}
-	monthly, errMonthly := providerCall(cfg, cred, http.MethodGet, xaiBillingMonthURL, header, "")
+	monthly, errMonthly := providerCall(key, cred, http.MethodGet, xaiBillingMonthURL, header, "")
 	if errMonthly != nil {
 		return nil, fmt.Errorf("xai monthly billing: %w", errMonthly)
 	}
@@ -1190,8 +1191,8 @@ func xaiSpan(window *quotaWindow, which, start, end string) error {
 
 // fetchPluginQuota asks CPA's quota/fetch, which serves plugin quota providers (e.g. opencode-go)
 // and declarative quota probes. HTTP 501 means the credential has no quota source.
-func fetchPluginQuota(cfg managementConfig, cred hostAuth) ([]quotaWindow, string, error) {
-	status, body, errCall := cpaManagementCall(cfg, http.MethodPost, "/v0/management/quota/fetch", map[string]string{"auth_index": cred.AuthIndex})
+func fetchPluginQuota(key string, cred hostAuth) ([]quotaWindow, string, error) {
+	status, body, errCall := cpaManagementCall(key, http.MethodPost, "/v0/management/quota/fetch", map[string]string{"auth_index": cred.AuthIndex})
 	if errCall != nil {
 		return nil, "", fmt.Errorf("%s: %w", cred.Provider, errCall)
 	}

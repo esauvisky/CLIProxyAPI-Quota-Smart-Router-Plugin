@@ -10,7 +10,7 @@ import (
 
 const (
 	uiResourcePath     = "/ui"
-	mgmtStateRoutePath = "/plugins/quota-smart-router/state"
+	mgmtStateRoutePath = "/plugins/safeguard-killer/state"
 )
 
 type managementRegistration struct {
@@ -57,8 +57,8 @@ func managementRegistrationPayload() managementRegistration {
 		Resources: []managementResource{
 			{
 				Path:        uiResourcePath,
-				Menu:        "Quota Smart Router",
-				Description: "Edit model groups, weights and settings; live view of quota windows, sessions and routing decisions.",
+				Menu:        "Safeguard Killer",
+				Description: "Strip safeguards, auto-approve tool classifiers, and route smart model groups with 5m cache stickiness and quota balancing.",
 			},
 		},
 	}
@@ -106,7 +106,7 @@ const uiHTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Quota Smart Router</title>
+<title>Safeguard Killer</title>
 <style>
   :root, [data-theme='dark'] {
     --bg-secondary: #151412;
@@ -395,13 +395,58 @@ const uiHTML = `<!doctype html>
   .attempts { margin: 6px 0 0; padding-left: 20px; font-size: 12px; }
   .attempts li { padding: 1px 4px; border-radius: 4px; }
   .attempts li.served { background: var(--winner-bg); font-weight: 650; }
+
+  .tabs {
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    background: transparent;
+    color: var(--text-secondary);
+  }
+  .tab-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+  .tab-btn.active {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border-color: var(--border-color);
+    box-shadow: var(--shadow-sm);
+  }
+  .tab-pane { display: none; flex-direction: column; gap: 20px; }
+  .tab-pane.active { display: flex; }
+
+  .feature-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px 18px; }
+  .feature-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--border-color) 75%, transparent);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    cursor: pointer;
+  }
+  .feature-item input[type="checkbox"] { margin-top: 3px; accent-color: var(--success-color); cursor: pointer; }
+  .feature-title { font-weight: 650; font-size: 13px; color: var(--text-primary); display: block; }
+  .feature-desc { font-size: 12px; color: var(--text-secondary); display: block; margin-top: 2px; }
 </style>
 </head>
 <body>
 <main class="main-content">
   <header class="page-header">
-    <h1 class="page-title">Quota Smart Router</h1>
-    <p class="page-desc">Model groups, credential weights and settings, plus the quota windows, sessions and routing decisions the router uses.</p>
+    <h1 class="page-title">Safeguard Killer</h1>
+    <p class="page-desc">Safeguard stripping, auto-mode classifier bypass, smart model groups with 5m cache stickiness, and quota-aware routing.</p>
   </header>
 
   <div class="status-bar">
@@ -426,71 +471,151 @@ const uiHTML = `<!doctype html>
   <div id="hostErrorBanner" class="banner" style="display:none;"></div>
   <div id="mgmtErrorBanner" class="banner" style="display:none;"></div>
 
-  <section class="card">
-    <div class="card-header">
-      <h2 class="card-title">Model groups</h2>
-      <button class="btn sm" data-action="add-group" id="addGroupBtn">Add group</button>
-    </div>
-    <p class="card-desc">A group is a virtual model clients request by its codename. It tries its models top to bottom and moves on when a model fails before output or all its credentials are low on quota.</p>
-    <div class="groups" id="groupsEditor"></div>
-    <datalist id="modelList"></datalist>
-  </section>
+  <nav class="tabs" id="tabBar">
+    <button class="tab-btn active" data-tab="settings">General Settings</button>
+    <button class="tab-btn" data-tab="groups">Smart Groups <span class="badge" id="tabGroupCount">0</span></button>
+    <button class="tab-btn" data-tab="sessions">Sessions <span class="badge" id="tabSessCount">0</span></button>
+    <button class="tab-btn" data-tab="decisions">Recent Decisions <span class="badge" id="tabDecCount">0</span></button>
+    <button class="tab-btn" data-tab="credentials">Credentials <span class="badge" id="tabCredCount">0</span></button>
+  </nav>
 
-  <section class="card">
-    <div class="card-header"><h2 class="card-title">Settings</h2></div>
-    <div class="form-grid" id="settingsForm">
-      <label class="field"><span class="cfg-key">Min remaining (%)</span>
-        <input class="input" type="number" step="any" min="0" max="99.999" data-field="min_remaining" data-setting="min_remaining_pct">
-        <span class="hint">Every applicable quota window must keep at least this much for a credential to be used.</span></label>
-      <label class="field"><span class="cfg-key">Idle minutes</span>
-        <input class="input" type="number" step="1" min="1" data-field="idle_minutes" data-setting="idle_minutes">
-        <span class="hint">A session without prompts for this long may move to another credential.</span></label>
-      <label class="field"><span class="cfg-key">Management URL</span>
-        <input class="input" type="text" data-field="management.url" data-setting="url">
-        <span class="hint">CPA management API used to read provider quota.</span></label>
-      <label class="field"><span class="cfg-key">Quota refresh minutes</span>
-        <input class="input" type="number" step="1" min="1" data-field="management.refresh_minutes" data-setting="refresh_minutes">
-        <span class="hint">How often quota is fetched per credential.</span></label>
-      <label class="field"><span class="cfg-key">Management key</span>
-        <input class="input" type="password" autocomplete="new-password" placeholder="unchanged" data-field="management.key" data-setting="key">
-        <span class="hint">Required for quota collection and balancing. Write-only: leave empty to keep the stored key.</span></label>
-    </div>
-  </section>
+  <div class="tab-pane active" id="pane-settings">
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">Router &amp; Quota Settings</h2></div>
+      <div class="form-grid" id="settingsForm">
+        <label class="field"><span class="cfg-key">Management key</span>
+          <input class="input" type="password" autocomplete="new-password" placeholder="unchanged" data-field="management_key" data-setting="key">
+          <span class="hint">Required for quota collection and balancing. Write-only: leave empty to keep the stored key.</span></label>
+        <label class="field"><span class="cfg-key">Min remaining (%)</span>
+          <input class="input" type="number" step="any" min="0" max="99.999" data-field="min_remaining" data-setting="min_remaining_pct">
+          <span class="hint">Every applicable quota window must keep at least this much for a credential to be used.</span></label>
+        <label class="field"><span class="cfg-key">Idle minutes</span>
+          <input class="input" type="number" step="1" min="1" data-field="idle_minutes" data-setting="idle_minutes">
+          <span class="hint">A session without prompts for this long may move to another credential.</span></label>
+      </div>
+    </section>
 
-  <section class="card">
-    <div class="card-header"><h2 class="card-title">Credentials</h2></div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Credential</th><th>Status</th><th>Weight</th><th>Quota windows</th><th>Source</th></tr></thead>
-        <tbody id="credBody"></tbody>
-      </table>
-    </div>
-  </section>
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">Safeguards &amp; Client Adaptations</h2></div>
+      <p class="card-desc">Control how Quota Smart Router handles model refusals, client notices, and hidden safety/classifier wire fields sent by Claude Code.</p>
+      <div class="feature-grid" id="featuresForm">
+        <label class="feature-item">
+          <input type="checkbox" data-feature="fallback_on_refusal">
+          <span>
+            <span class="feature-title">Fallback on refusal</span>
+            <span class="feature-desc">Detect safeguard stops, content filters, empty responses, and plain-text or scope-gate refusals during stream prefetch and automatically switch to the next model in the group.</span>
+          </span>
+        </label>
+        <label class="feature-item">
+          <input type="checkbox" data-feature="client_fallback_notices">
+          <span>
+            <span class="feature-title">Client fallback &amp; model-switch notices</span>
+            <span class="feature-desc">Emit a visible notice in the client when a model in a group refuses/fails or when the active model changes, and strip it from conversation history on later turns so models never see it.</span>
+          </span>
+        </label>
+        <label class="feature-item">
+          <input type="checkbox" data-feature="rewrite_cyber_system_prompt">
+          <span>
+            <span class="feature-title">Rewrite cyber &amp; dual-use system prompt gate</span>
+            <span class="feature-desc">Replace Claude Code's built-in "require clear authorization context" and Fable/Mythos dual-use restriction blurbs in the system prompt so models answer directly without interrogating for scope.</span>
+          </span>
+        </label>
+        <label class="feature-item">
+          <input type="checkbox" data-feature="strip_refusal_taint_headers">
+          <span>
+            <span class="feature-title">Strip refusal-taint headers</span>
+            <span class="feature-desc">Remove x-is-refusal-fallback, x-cc-fallback-*, x-cc-original-request-id, and x-cc-atis headers that Claude Code attaches to every request after a turn is flagged.</span>
+          </span>
+        </label>
+        <label class="feature-item">
+          <input type="checkbox" data-feature="disable_upstream_server_fallback">
+          <span>
+            <span class="feature-title">Disable upstream server-side model swap</span>
+            <span class="feature-desc">Remove the fallbacks body field and server-side-fallback / fallback-credit beta headers so Anthropic's servers do not silently swap your model mid-stream.</span>
+          </span>
+        </label>
+        <label class="feature-item">
+          <input type="checkbox" data-feature="bypass_auto_mode_classifier">
+          <span>
+            <span class="feature-title">Bypass auto-mode tool classifier</span>
+            <span class="feature-desc">Strip safeguards and dangerous-tool-use betas from requests, stamp not_flagged safeguard_results on group tool calls, and auto-approve local auto-mode classifier checks in 0ms.</span>
+          </span>
+        </label>
+        <label class="feature-item">
+          <input type="checkbox" data-feature="neutralize_classifier_stop_nudges">
+          <span>
+            <span class="feature-title">Neutralize classifier-stop companion nudges</span>
+            <span class="feature-desc">Rewrite Claude Code's injected "stopped by a safety classifier — Do not produce that content again" messages and tool-result tombstones into neutral continuation prompts.</span>
+          </span>
+        </label>
+        <label class="feature-item">
+          <input type="checkbox" data-feature="strip_restrictive_system_reminders">
+          <span>
+            <span class="feature-title">Strip restrictive &lt;system-reminder&gt; blocks</span>
+            <span class="feature-desc">Remove mid-conversation &lt;system-reminder&gt; or role=system refusal and dual-use warning injections from messages while preserving normal harness reminders.</span>
+          </span>
+        </label>
+      </div>
+      <div class="form-grid" style="margin-top: 14px;" id="noticePrefixForm">
+        <label class="field"><span class="cfg-key">Client notice prefix</span>
+          <input class="input mono" type="text" placeholder="⚡ [Safeguard Killer] " data-field="features.notice_prefix" data-feature-text="notice_prefix">
+          <span class="hint">Prefix prepended to client fallback/switch notices (stripped from model context on subsequent turns).</span></label>
+      </div>
+    </section>
+  </div>
 
-  <section class="card">
-    <div class="card-header"><h2 class="card-title">Sessions</h2></div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Session</th><th>Credential</th><th>Provider</th><th>Model</th><th>Bound</th><th>Last seen</th><th>Idle expires</th></tr></thead>
-        <tbody id="sessBody"></tbody>
-      </table>
-    </div>
-  </section>
+  <div class="tab-pane" id="pane-groups">
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">Smart Groups</h2>
+        <button class="btn sm" data-action="add-group" id="addGroupBtn">Add group</button>
+      </div>
+      <p class="card-desc">A group is a virtual model clients request by its codename. It tries its models top to bottom, pins to the working model while the 5-minute prompt cache is warm, and retries from the top once 5 minutes pass.</p>
+      <div class="groups" id="groupsEditor"></div>
+      <datalist id="modelList"></datalist>
+    </section>
+  </div>
 
-  <section class="card">
-    <div class="card-header"><h2 class="card-title">Recent decisions</h2></div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Time</th><th>Kind</th><th>Model</th><th>Session</th><th>Chosen</th><th>Reason</th></tr></thead>
-        <tbody id="decBody"></tbody>
-      </table>
-    </div>
-  </section>
+  <div class="tab-pane" id="pane-sessions">
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">Sessions</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Session</th><th>Credential / Target</th><th>Provider</th><th>Model / Group</th><th>Bound</th><th>Last seen</th><th>Idle / Cache expires</th></tr></thead>
+          <tbody id="sessBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="tab-pane" id="pane-decisions">
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">Recent Decisions</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Kind</th><th>Model</th><th>Session</th><th>Chosen</th><th>Reason</th></tr></thead>
+          <tbody id="decBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <div class="tab-pane" id="pane-credentials">
+    <section class="card">
+      <div class="card-header"><h2 class="card-title">Credentials</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Credential</th><th>Status</th><th>Quota windows</th><th>Source</th></tr></thead>
+          <tbody id="credBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
 </main>
 
 <script>
-const STATE_API_URL = '/v0/management/plugins/quota-smart-router/state';
-const CONFIG_API_URL = '/v8/management/config/plugins/configs/quota-smart-router';
+const STATE_API_URL = '/v0/management/plugins/safeguard-killer/state';
+const CONFIG_API_URL = '/v8/management/config/plugins/configs/safeguard-killer';
 const REFRESH_MS = 10000;
 const APPLY_WAIT_MS = 1500;
 const ZERO_TIME = '0001-01-01T00:00:00Z';
@@ -662,26 +787,39 @@ function credNameByID(id) {
 
 // ---- draft (editable config) ----
 
-// Go encodes nil maps and slices as null.
-function weightsOf(cfg) {
-  return cfg.weights === null ? {} : cfg.weights;
-}
-
+// Go encodes nil slices as null.
 function groupsOf(cfg) {
   return cfg.groups === null ? [] : cfg.groups;
 }
 
-// Canonical JSON of the router-relevant config; weight 1 is the default, so it is dropped.
+const DEFAULT_NOTICE_PREFIX = '⚡ [Safeguard Killer] ';
+const FEATURE_KEYS = [
+  'fallback_on_refusal',
+  'client_fallback_notices',
+  'rewrite_cyber_system_prompt',
+  'strip_refusal_taint_headers',
+  'disable_upstream_server_fallback',
+  'bypass_auto_mode_classifier',
+  'neutralize_classifier_stop_nudges',
+  'strip_restrictive_system_reminders',
+];
+
+function featuresOf(cfg) {
+  const raw = cfg.features || {};
+  const out = {};
+  for (const k of FEATURE_KEYS) {
+    out[k] = typeof raw[k] === 'boolean' ? raw[k] : true;
+  }
+  out.notice_prefix = typeof raw.notice_prefix === 'string' && raw.notice_prefix !== '' ? raw.notice_prefix : DEFAULT_NOTICE_PREFIX;
+  return out;
+}
+
 function canonConfig(cfg) {
-  const w = weightsOf(cfg);
-  const weights = Object.keys(w).sort().filter(k => w[k] !== 1).map(k => [k, w[k]]);
   return JSON.stringify({
     min_remaining: cfg.min_remaining,
     idle_minutes: cfg.idle_minutes,
-    url: cfg.management.url,
-    refresh_minutes: cfg.management.refresh_minutes,
-    weights: weights,
     groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, models: g.models })),
+    features: featuresOf(cfg),
   });
 }
 
@@ -690,22 +828,19 @@ function fracToPct(f) {
 }
 
 function loadDraft(cfg) {
-  const w = weightsOf(cfg);
-  const weights = {};
-  for (const k of Object.keys(w)) weights[k] = String(w[k]);
   draft = {
     settings: {
       min_remaining_pct: fracToPct(cfg.min_remaining),
       idle_minutes: String(cfg.idle_minutes),
-      url: cfg.management.url,
-      refresh_minutes: String(cfg.management.refresh_minutes),
       key: '',
     },
-    weights: weights,
+    features: featuresOf(cfg),
     groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, models: g.models.slice(), pending: '' })),
   };
   draftSourceCanon = canonConfig(cfg);
   for (const el of document.querySelectorAll('[data-setting]')) el.value = draft.settings[el.dataset.setting];
+  for (const el of document.querySelectorAll('[data-feature]')) el.checked = Boolean(draft.features[el.dataset.feature]);
+  for (const el of document.querySelectorAll('[data-feature-text]')) el.value = draft.features[el.dataset.featureText];
   setDirty(false);
   markInvalid(new Set());
   renderGroups();
@@ -737,18 +872,6 @@ function validateDraft() {
   if (!Number.isFinite(minPct) || minFrac < 0 || minFrac >= 1) errors.push(['min_remaining', 'Min remaining must be a percentage in [0, 100), got "' + s.min_remaining_pct + '"']);
   const idle = parseNum(s.idle_minutes);
   if (!Number.isInteger(idle) || idle <= 0) errors.push(['idle_minutes', 'Idle minutes must be a positive whole number, got "' + s.idle_minutes + '"']);
-  const refreshMin = parseNum(s.refresh_minutes);
-  if (!Number.isInteger(refreshMin) || refreshMin <= 0) errors.push(['management.refresh_minutes', 'Quota refresh minutes must be a positive whole number, got "' + s.refresh_minutes + '"']);
-
-  const weights = {};
-  for (const id of Object.keys(draft.weights).sort()) {
-    const w = parseNum(draft.weights[id]);
-    if (!Number.isFinite(w) || w <= 0) {
-      errors.push(['weights.' + id, 'Weight of ' + credNameByID(id) + ' must be a positive number, got "' + draft.weights[id] + '"']);
-      continue;
-    }
-    if (w !== 1) weights[id] = w;
-  }
 
   const groups = draft.groups.map(g => ({ id: g.id.trim(), name: g.name.trim(), models: g.models.map(m => m.trim()) }));
   const ids = new Set();
@@ -769,14 +892,17 @@ function validateDraft() {
     });
   });
 
+  const features = Object.assign({}, draft.features, {
+    notice_prefix: draft.features.notice_prefix !== '' ? draft.features.notice_prefix : DEFAULT_NOTICE_PREFIX,
+  });
+
   return {
     errors: errors,
     cfg: {
       min_remaining: minFrac,
       idle_minutes: idle,
-      management: { url: s.url.trim(), refresh_minutes: refreshMin },
-      weights: weights,
       groups: groups,
+      features: features,
     },
   };
 }
@@ -845,14 +971,15 @@ async function saveValidated(cfg) {
   const merged = Object.assign({}, node);
   merged.min_remaining = cfg.min_remaining;
   merged.idle_minutes = cfg.idle_minutes;
-  if (merged.management === undefined) merged.management = {};
-  if (!isPlainObject(merged.management)) throw new Error('config node key "management" is not an object: ' + JSON.stringify(merged.management));
-  merged.management = Object.assign({}, merged.management, { url: cfg.management.url, refresh_minutes: cfg.management.refresh_minutes });
-  if (draft.settings.key.trim() !== '') merged.management.key = draft.settings.key.trim();
-  if (Object.keys(cfg.weights).length > 0) merged.weights = cfg.weights;
-  else delete merged.weights;
+  if (draft.settings.key.trim() !== '') merged.management_key = draft.settings.key.trim();
+  else if (!merged.management_key && isPlainObject(merged.management) && typeof merged.management.key === 'string' && merged.management.key !== '') {
+    merged.management_key = merged.management.key;
+  }
+  delete merged.management;
+  delete merged.weights;
   if (cfg.groups.length > 0) merged.groups = cfg.groups;
   else delete merged.groups;
+  merged.features = cfg.features;
 
   const headers = authHeaders();
   headers['Content-Type'] = 'application/json';
@@ -898,6 +1025,7 @@ function groupFieldAttr(i, rest) {
 function renderGroups() {
   const root = document.getElementById('groupsEditor');
   document.getElementById('groupCount').textContent = String(draft.groups.length);
+  document.getElementById('tabGroupCount').textContent = String(draft.groups.length);
   if (draft.groups.length === 0) {
     root.innerHTML = '<div class="empty">No model groups. Add one to expose a virtual model that falls back across models.</div>';
     return;
@@ -1001,13 +1129,8 @@ function renderWindow(w) {
 
 function renderCredentials() {
   const body = document.getElementById('credBody');
-  if (body.contains(document.activeElement)) {
-    credRenderPending = true;
-    return;
-  }
-  credRenderPending = false;
   if (state.credentials.length === 0) {
-    body.innerHTML = '<tr><td colspan="5" class="empty">No credentials reported by the host.</td></tr>';
+    body.innerHTML = '<tr><td colspan="4" class="empty">No credentials reported by the host.</td></tr>';
     return;
   }
   body.innerHTML = state.credentials.map(c => {
@@ -1023,11 +1146,6 @@ function renderCredentials() {
     if (!a.disabled && !a.unavailable) status.push('<span class="badge ok">' + esc(a.status === '' ? 'active' : a.status) + '</span>');
     else if (a.status !== '') status.push('<span class="badge">' + esc(a.status) + '</span>');
     if (!isZero(a.next_retry_after)) status.push('<div class="win-meta">retry ' + rel(a.next_retry_after) + '</div>');
-
-    // Unlisted credentials weigh 1 (pluginConfig.weight).
-    const weight = Object.prototype.hasOwnProperty.call(draft.weights, a.id) ? draft.weights[a.id] : '1';
-    const weightInput = '<input class="input num mono" type="number" step="any" min="0" value="' + esc(weight) + '" data-weight="' + esc(a.id) + '" data-field="weights.' + esc(a.id) + '">' +
-      '<div class="win-meta">live <span class="mono">' + esc(c.weight) + '</span></div>';
 
     let windows;
     if (!c.has_quota) windows = '<span class="subtle">no snapshot yet</span>';
@@ -1048,7 +1166,6 @@ function renderCredentials() {
         (models.length > 0 ? '<div style="margin-top:6px">' + details('models:' + a.id, 'Models (' + models.length + ')', '<div class="small mono">' + models.map(esc).join('<br>') + '</div>') + '</div>' : '') +
       '</td>' +
       '<td class="nowrap">' + status.join(' ') + '</td>' +
-      '<td class="nowrap">' + weightInput + '</td>' +
       '<td>' + windows + '</td>' +
       '<td class="nowrap">' + source + '</td>' +
     '</tr>';
@@ -1083,7 +1200,6 @@ function renderRanking(d) {
     '<tr class="' + (r.auth_id === d.auth_id ? 'winner' : '') + '">' +
       '<td>' + esc(credNameByID(r.auth_id)) + '</td>' +
       '<td>' + esc(r.provider) + '</td>' +
-      '<td class="mono">' + esc(num(r.weight, 2)) + '</td>' +
       '<td>' + esc(r.window ? r.window : '-') + '</td>' +
       '<td class="mono">' + esc(pct(r.remaining)) + '</td>' +
       '<td class="mono">' + esc(num(r.hours_to_reset, 2)) + '</td>' +
@@ -1091,7 +1207,7 @@ function renderRanking(d) {
       '<td>' + (r.excluded ? '<span class="badge bad">' + esc(r.excluded) + '</span>' : '') + '</td>' +
     '</tr>'
   ).join('');
-  return '<table class="rank"><thead><tr><th>Auth</th><th>Provider</th><th>Weight</th><th>Window</th><th>Remaining</th><th>Hours to reset</th><th>Rate</th><th>Excluded</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  return '<table class="rank"><thead><tr><th>Auth</th><th>Provider</th><th>Window</th><th>Remaining</th><th>Hours to reset</th><th>Rate</th><th>Excluded</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 function renderAttempts(d) {
@@ -1152,6 +1268,9 @@ function render() {
   document.getElementById('versionVal').textContent = state.version;
   document.getElementById('credCount').textContent = String(state.credentials.length);
   document.getElementById('sessCount').textContent = String(state.sessions.length);
+  document.getElementById('tabCredCount').textContent = String(state.credentials.length);
+  document.getElementById('tabSessCount').textContent = String(state.sessions.length);
+  document.getElementById('tabDecCount').textContent = String(state.decisions.length);
   document.getElementById('modelList').innerHTML = state.models.map(m => '<option value="' + esc(m) + '"></option>').join('');
   // Follow config changes made elsewhere only while there is nothing unsaved here.
   if (draft === null || (!dirty && !saving && canonConfig(state.config) !== draftSourceCanon)) loadDraft(state.config);
@@ -1243,16 +1362,37 @@ document.getElementById('settingsForm').addEventListener('input', (ev) => {
   setDirty(true);
 });
 
-const credBody = document.getElementById('credBody');
-credBody.addEventListener('input', (ev) => {
-  if (ev.target.dataset.weight === undefined) return;
-  draft.weights[ev.target.dataset.weight] = ev.target.value;
+document.getElementById('featuresForm').addEventListener('change', (ev) => {
+  if (ev.target.dataset.feature === undefined) return;
+  draft.features[ev.target.dataset.feature] = ev.target.checked;
   setDirty(true);
 });
-credBody.addEventListener('focusout', () => {
-  // Apply a live re-render that was held back while a weight input had focus.
-  setTimeout(() => { if (credRenderPending) renderCredentials(); }, 0);
+
+document.getElementById('noticePrefixForm').addEventListener('input', (ev) => {
+  if (ev.target.dataset.featureText === undefined) return;
+  draft.features[ev.target.dataset.featureText] = ev.target.value;
+  setDirty(true);
 });
+
+function selectTab(tab) {
+  for (const btn of document.querySelectorAll('#tabBar [data-tab]')) {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  }
+  for (const pane of document.querySelectorAll('.tab-pane')) {
+    pane.classList.toggle('active', pane.id === 'pane-' + tab);
+  }
+  localStorage.setItem('qsr-active-tab', tab);
+}
+
+document.getElementById('tabBar').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-tab]');
+  if (btn !== null) selectTab(btn.dataset.tab);
+});
+
+const savedTab = localStorage.getItem('qsr-active-tab');
+if (savedTab && document.getElementById('pane-' + savedTab) !== null) {
+  selectTab(savedTab);
+}
 
 document.addEventListener('toggle', (ev) => {
   const el = ev.target;

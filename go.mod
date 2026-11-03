@@ -1,4 +1,4 @@
-module github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin
+module github.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin
 
 go 1.26
 

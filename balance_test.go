@@ -59,8 +59,7 @@ func resetHostState(t *testing.T) {
 	hostMu.Unlock()
 	stateMu.Lock()
 	sessions = make(map[string]*sessionBinding)
-	sessionRefusals = make(map[string]map[string]time.Time)
-	sessionGroupModels = make(map[string]string)
+	groupSessions = make(map[string]*sessionBinding)
 	decisions = nil
 	stateMu.Unlock()
 	t.Cleanup(func() {
@@ -80,8 +79,8 @@ func noOther(t *testing.T) func(string, any) (json.RawMessage, error) {
 
 func balanceConfig() pluginConfig {
 	cfg := defaultPluginConfig()
-	cfg.Management.Key = "k"
-	cfg.Management.RefreshMinutes = 1000
+	cfg.ManagementKey = "k"
+	quotaRefreshAge = 1000 * time.Minute
 	return cfg
 }
 
@@ -104,18 +103,6 @@ func TestPickPrefersQuotaExpiringSooner(t *testing.T) {
 	resp, errPick := pick(pickReq("", "a", "b"), balanceConfig(), testNow)
 	if errPick != nil || resp.AuthID != "a" || !resp.Handled {
 		t.Fatalf("pick() = %+v, %v; want a", resp, errPick)
-	}
-}
-
-func TestPickWeightScalesRate(t *testing.T) {
-	fakeHost(t, []string{"claude-opus-4-8"}, noOther(t), "pro", "max")
-	setQuota(t, "pro", weekly(0.30, 24*time.Hour))
-	setQuota(t, "max", weekly(0.60, 144*time.Hour))
-	cfg := balanceConfig()
-	cfg.Weights = map[string]float64{"max": 20}
-	resp, _ := pick(pickReq("", "pro", "max"), cfg, testNow)
-	if resp.AuthID != "max" {
-		t.Fatalf("pick() = %+v, want max", resp)
 	}
 }
 

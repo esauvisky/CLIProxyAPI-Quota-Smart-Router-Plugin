@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -146,14 +145,10 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	now := time.Now()
 	session := groupSessionKey(req)
 	aux := isAuxiliaryRequest(req.Payload)
-	resetRefusalsIfAllRefused(cfg, session, group, now)
-	var attempts []groupAttempt
+	sanitizedPayload, sanitizedHeaders, _, _ := sanitizeRequest(req.Payload, req.Headers, cfg)
+	order, attempts, prevLookupModel := groupCandidateOrder(session, group, now)
 	var lastErr error
-	for _, model := range group.Models {
-		if isSessionRefused(cfg, session, group.ID, model, now) {
-			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: refused earlier in session"})
-			continue
-		}
+	for _, model := range order {
 		reason, errSkip := skipReason(cfg, model, now)
 		if errSkip != nil {
 			return nil, errSkip
@@ -162,13 +157,13 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: " + reason})
 			continue
 		}
-		body, errBody := withModel(req.Payload, model)
+		body, errBody := withModel(sanitizedPayload, model)
 		if errBody != nil {
 			return nil, errBody
 		}
 		rawResp, errCall := hostCall(methodHostModelExecute, hostModelRequest{
 			EntryProtocol: req.SourceFormat, ExitProtocol: req.Format, Model: model, Body: body,
-			Headers: req.Headers, Query: req.Query, Alt: req.Alt, HostCallbackID: req.HostCallbackID,
+			Headers: sanitizedHeaders, Query: req.Query, Alt: req.Alt, HostCallbackID: req.HostCallbackID,
 		})
 		if errCall != nil {
 			attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errCall.Error()})
@@ -179,18 +174,19 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 		if errDecode := json.Unmarshal(rawResp, &resp); errDecode != nil {
 			return nil, fmt.Errorf("decode host.model.execute response: %w", errDecode)
 		}
-		if errRefusal := checkNonStreamResponse(resp.Body); errRefusal != nil {
-			recordSessionRefusal(session, group.ID, model, time.Now())
-			attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errRefusal.Error()})
-			lastErr = errRefusal
-			continue
+		if cfg.Features.FallbackOnRefusal {
+			if errRefusal := checkNonStreamResponse(resp.Body); errRefusal != nil {
+				attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errRefusal.Error()})
+				lastErr = errRefusal
+				continue
+			}
 		}
 		attempts = append(attempts, groupAttempt{Model: model, Result: "served"})
 		recordGroupDecision(group, session, attempts, model)
 		bodyOut := resp.Body
 		if !aux {
-			prevModel := updateSessionGroupModel(session, group.ID, model)
-			notice := buildGroupNotice(group, attempts, model, prevModel)
+			prevModel := bindGroupSession(session, group.ID, model, prevLookupModel, now)
+			notice := buildGroupNotice(cfg, group, attempts, model, prevModel)
 			bodyOut = injectNonStreamNotice(resp.Body, effectiveFormat(req.Format, req.SourceFormat), notice)
 		}
 		return okEnvelope(executorResponse{Payload: bodyOut, Headers: resp.Headers})
@@ -216,14 +212,11 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 	now := time.Now()
 	session := groupSessionKey(req)
 	aux := isAuxiliaryRequest(req.Payload)
-	resetRefusalsIfAllRefused(cfg, session, group, now)
-	var attempts []groupAttempt
+	sanitizedPayload, sanitizedHeaders, _, hadSafeguards := sanitizeRequest(req.Payload, req.Headers, cfg)
+	stampSafeguards := cfg.Features.BypassAutoModeClassifier && hadSafeguards
+	order, attempts, prevLookupModel := groupCandidateOrder(session, group, now)
 	var lastErr error
-	for _, model := range group.Models {
-		if isSessionRefused(cfg, session, group.ID, model, now) {
-			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: refused earlier in session"})
-			continue
-		}
+	for _, model := range order {
 		reason, errSkip := skipReason(cfg, model, now)
 		if errSkip != nil {
 			return nil, errSkip
@@ -232,13 +225,13 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 			attempts = append(attempts, groupAttempt{Model: model, Result: "skipped: " + reason})
 			continue
 		}
-		body, errBody := withModel(req.Payload, model)
+		body, errBody := withModel(sanitizedPayload, model)
 		if errBody != nil {
 			return nil, errBody
 		}
 		rawResp, errCall := hostCall(methodHostModelStream, hostModelRequest{
 			EntryProtocol: req.SourceFormat, ExitProtocol: req.Format, Model: model, Stream: true, Body: body,
-			Headers: req.Headers, Query: req.Query, Alt: req.Alt, HostCallbackID: req.HostCallbackID,
+			Headers: sanitizedHeaders, Query: req.Query, Alt: req.Alt, HostCallbackID: req.HostCallbackID,
 		})
 		if errCall != nil {
 			attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errCall.Error()})
@@ -249,9 +242,8 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		if errDecode := json.Unmarshal(rawResp, &resp); errDecode != nil {
 			return nil, fmt.Errorf("decode host.model.execute_stream response: %w", errDecode)
 		}
-		prefetched, done, errPrefetch := prefetchStream(resp.StreamID, req.HostCallbackID)
+		prefetched, done, errPrefetch := prefetchStream(resp.StreamID, req.HostCallbackID, cfg.Features.FallbackOnRefusal)
 		if errPrefetch != nil {
-			recordSessionRefusal(session, group.ID, model, time.Now())
 			attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errPrefetch.Error()})
 			lastErr = errPrefetch
 			continue
@@ -260,11 +252,11 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		recordGroupDecision(group, session, attempts, model)
 		shiftIndices := false
 		if !aux {
-			prevModel := updateSessionGroupModel(session, group.ID, model)
-			notice := buildGroupNotice(group, attempts, model, prevModel)
+			prevModel := bindGroupSession(session, group.ID, model, prevLookupModel, now)
+			notice := buildGroupNotice(cfg, group, attempts, model, prevModel)
 			prefetched, shiftIndices = injectStreamNotice(prefetched, effectiveFormat(req.Format, req.SourceFormat), notice)
 		}
-		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID, prefetched, done, shiftIndices, session, group.ID, model)
+		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID, prefetched, done, shiftIndices, stampSafeguards, cfg.Features.FallbackOnRefusal, session, group, model)
 		return okEnvelope(executorStreamOpenResponse{Headers: resp.Headers})
 	}
 	recordGroupDecision(group, session, attempts, "")
@@ -272,8 +264,10 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 }
 
 // forwardStream flushes prefetched chunks and copies the remainder of the target model's stream.
-func forwardStream(source, target, callbackID string, prefetched [][]byte, sourceDone, shiftIndices bool, session, groupID, model string) {
+func forwardStream(source, target, callbackID string, prefetched [][]byte, sourceDone, shiftIndices, stampSafeguards, checkRefusal bool, session string, group modelGroup, model string) {
+	seenToolIDs := make(map[string]bool)
 	for _, payload := range prefetched {
+		payload = processStreamSafeguardChunk(payload, seenToolIDs, stampSafeguards)
 		if _, errEmit := hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: payload, HostCallbackID: callbackID}); errEmit != nil {
 			if !sourceDone {
 				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: source, HostCallbackID: callbackID})
@@ -297,13 +291,16 @@ func forwardStream(source, target, callbackID string, prefetched [][]byte, sourc
 			return
 		}
 		if len(chunk.Payload) > 0 {
-			if refusal, _, _, _ := inspectStreamChunk(chunk.Payload); refusal != "" {
-				recordSessionRefusal(session, groupID, model, time.Now())
+			if checkRefusal {
+				if refusal, _, _, _ := inspectStreamChunk(chunk.Payload); refusal != "" {
+					advanceGroupSessionOnRefusal(session, group, model, time.Now())
+				}
 			}
 			payload := chunk.Payload
 			if shiftIndices {
 				payload, _ = shiftClaudeStreamChunk(payload, false, "")
 			}
+			payload = processStreamSafeguardChunk(payload, seenToolIDs, stampSafeguards)
 			if _, errEmit := hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: payload, HostCallbackID: callbackID}); errEmit != nil {
 				// The client stream is gone; release the target stream. Its close result has no reader.
 				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: source, HostCallbackID: callbackID})
@@ -326,7 +323,7 @@ func closeStream(target, callbackID, errText string) {
 // below min_remaining. Credentials without quota data (API keys, unsupported providers) are
 // assumed usable, so a model is only skipped on positive evidence.
 func skipReason(cfg pluginConfig, model string, now time.Time) (string, error) {
-	if cfg.Management.Key == "" {
+	if cfg.ManagementKey == "" {
 		return "", nil
 	}
 	snapshot, errHost := hostState(now)
@@ -338,7 +335,7 @@ func skipReason(cfg pluginConfig, model string, now time.Time) (string, error) {
 		if auth.Disabled || !containsString(snapshot.models[auth.ID], model) {
 			continue
 		}
-		entry := rankEntry{AuthID: auth.ID, Weight: 1}
+		entry := rankEntry{AuthID: auth.ID}
 		rateCredential(&entry, model, cfg.MinRemaining, now)
 		if entry.Excluded == "" || !strings.Contains(entry.Excluded, "% left") {
 			return "", nil
@@ -351,22 +348,17 @@ func skipReason(cfg pluginConfig, model string, now time.Time) (string, error) {
 	return "all credentials low on quota: " + strings.Join(exhausted, ", "), nil
 }
 
-// withModel sets the top-level "model" field the client sent to the target model and neutralizes
-// Claude Code's refusal-retry poison nudge so a fallback model continues instead of refusing.
+// withModel sets the top-level "model" field the client sent to the target model.
 // Protocols that carry the model only in the path (Gemini) have no "model" field and are passed
 // through unchanged.
 func withModel(payload []byte, model string) ([]byte, error) {
-	payload = bytes.ReplaceAll(payload, []byte(claudeRefusalRetryNudge), []byte(claudeRefusalReplacement))
-	payload = bytes.ReplaceAll(payload, []byte(strings.ReplaceAll(claudeRefusalRetryNudge, "—", "\\u2014")), []byte(claudeRefusalReplacement))
+	bodyOut, _, _, _ := sanitizeRequest(payload, nil, currentConfig())
 	var body map[string]json.RawMessage
-	if errUnmarshal := json.Unmarshal(payload, &body); errUnmarshal != nil {
+	if errUnmarshal := json.Unmarshal(bodyOut, &body); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode group request body: %w", errUnmarshal)
 	}
-	if rawMessages, ok := body["messages"]; ok {
-		body["messages"] = stripNoticeFromMessages(rawMessages)
-	}
 	if _, ok := body["model"]; !ok {
-		return json.Marshal(body)
+		return bodyOut, nil
 	}
 	encoded, _ := json.Marshal(model)
 	body["model"] = encoded
