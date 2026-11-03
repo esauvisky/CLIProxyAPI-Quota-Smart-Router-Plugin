@@ -50,6 +50,7 @@ type registrationCapabilities struct {
 	ExecutorModelScope    string   `json:"executor_model_scope"`
 	ExecutorInputFormats  []string `json:"executor_input_formats"`
 	ExecutorOutputFormats []string `json:"executor_output_formats"`
+	RequestInterceptor    bool     `json:"request_interceptor"`
 }
 
 type pluginConfig struct {
@@ -200,6 +201,7 @@ func pluginRegistration() registration {
 			ExecutorModelScope:    "static",
 			ExecutorInputFormats:  executorFormats,
 			ExecutorOutputFormats: executorFormats,
+			RequestInterceptor:    true,
 		},
 	}
 }

@@ -63,7 +63,7 @@ const (
 	schemaVersion uint32 = 9
 
 	pluginName    = "Quota Smart Router"
-	pluginVersion = "0.4.1"
+	pluginVersion = "0.4.2"
 	pluginAuthor  = "esauvisky"
 	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin"
 	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin/main/assets/logo.png"
@@ -82,6 +82,8 @@ const (
 	methodExecutorStream     = "executor.execute_stream"
 	methodExecutorCount      = "executor.count_tokens"
 	methodExecutorHTTP       = "executor.http_request"
+	methodRequestBefore      = "request.intercept_before"
+	methodRequestAfter       = "request.intercept_after"
 )
 
 type envelope struct {
@@ -195,6 +197,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return countGroupTokens(request, currentConfig())
 	case methodExecutorHTTP:
 		return nil, &statusError{Code: "not_supported", Message: method + " is not supported for model groups", HTTPStatus: 501}
+	case methodRequestBefore, methodRequestAfter:
+		return handleRequestIntercept(request)
 	case methodManagementRegister:
 		return okEnvelope(managementRegistrationPayload())
 	case methodManagementHandle:

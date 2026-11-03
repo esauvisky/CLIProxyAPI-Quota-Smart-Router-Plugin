@@ -198,11 +198,20 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 	if _, errExec := executeGroupStream([]byte(reqJSON), groupConfig()); errExec != nil {
 		t.Fatalf("executeGroupStream() error = %v", errExec)
 	}
-	if got := <-emitted; !strings.Contains(got, "Here is the answer.") {
-		t.Fatalf("emitted chunk = %q, want answer from abliterated", got)
+	var allEmitted strings.Builder
+	for {
+		ev := <-emitted
+		if ev == "close" {
+			break
+		}
+		allEmitted.WriteString(ev)
 	}
-	if got := <-emitted; got != "close" {
-		t.Fatalf("second event = %q, want close", got)
+	streamOut := allEmitted.String()
+	if !strings.Contains(streamOut, "Here is the answer.") {
+		t.Fatalf("emitted stream = %q, want answer from abliterated", streamOut)
+	}
+	if !strings.Contains(streamOut, "glm-5.3-uncensored (refusal (cyber))") || !strings.Contains(streamOut, "switched to abliterated") {
+		t.Fatalf("emitted stream missing fallback notice: %q", streamOut)
 	}
 	if strings.Join(openedModels, ",") != "glm-5.3-uncensored,deepseek-v4.1-flash-uncensored,abliterated" {
 		t.Fatalf("openedModels = %v", openedModels)
@@ -214,13 +223,23 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 		t.Fatalf("nudge was not neutralized: %s", lastNudgeBody)
 	}
 
-	// Next request in the same session skips the two models that refused and goes straight to abliterated.
+	// Next request in the same session skips the two models that refused, goes straight to
+	// abliterated, and does not repeat the switch notice since the active model did not change.
 	openedModels = nil
 	if _, errExec := executeGroupStream([]byte(reqJSON), groupConfig()); errExec != nil {
 		t.Fatalf("second executeGroupStream() error = %v", errExec)
 	}
-	<-emitted
-	<-emitted
+	allEmitted.Reset()
+	for {
+		ev := <-emitted
+		if ev == "close" {
+			break
+		}
+		allEmitted.WriteString(ev)
+	}
+	if strings.Contains(allEmitted.String(), noticePrefix) {
+		t.Fatalf("second turn on same model unexpectedly repeated notice: %q", allEmitted.String())
+	}
 	if strings.Join(openedModels, ",") != "abliterated" {
 		t.Fatalf("second turn openedModels = %v, want [abliterated]", openedModels)
 	}

@@ -186,7 +186,10 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 		}
 		attempts = append(attempts, groupAttempt{Model: model, Result: "served"})
 		recordGroupDecision(group, attempts, model)
-		return okEnvelope(executorResponse{Payload: resp.Body, Headers: resp.Headers})
+		prevModel := updateSessionGroupModel(session, group.ID, model)
+		notice := buildGroupNotice(group, attempts, model, prevModel)
+		bodyOut := injectNonStreamNotice(resp.Body, effectiveFormat(req.Format, req.SourceFormat), notice)
+		return okEnvelope(executorResponse{Payload: bodyOut, Headers: resp.Headers})
 	}
 	recordGroupDecision(group, attempts, "")
 	return nil, groupFailure(group, attempts, lastErr)
@@ -250,7 +253,10 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		}
 		attempts = append(attempts, groupAttempt{Model: model, Result: "served"})
 		recordGroupDecision(group, attempts, model)
-		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID, prefetched, done, session, group.ID, model)
+		prevModel := updateSessionGroupModel(session, group.ID, model)
+		notice := buildGroupNotice(group, attempts, model, prevModel)
+		prefetched, shiftIndices := injectStreamNotice(prefetched, effectiveFormat(req.Format, req.SourceFormat), notice)
+		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID, prefetched, done, shiftIndices, session, group.ID, model)
 		return okEnvelope(executorStreamOpenResponse{Headers: resp.Headers})
 	}
 	recordGroupDecision(group, attempts, "")
@@ -258,7 +264,7 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 }
 
 // forwardStream flushes prefetched chunks and copies the remainder of the target model's stream.
-func forwardStream(source, target, callbackID string, prefetched [][]byte, sourceDone bool, session, groupID, model string) {
+func forwardStream(source, target, callbackID string, prefetched [][]byte, sourceDone, shiftIndices bool, session, groupID, model string) {
 	for _, payload := range prefetched {
 		if _, errEmit := hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: payload, HostCallbackID: callbackID}); errEmit != nil {
 			if !sourceDone {
@@ -286,7 +292,11 @@ func forwardStream(source, target, callbackID string, prefetched [][]byte, sourc
 			if refusal, _, _, _ := inspectStreamChunk(chunk.Payload); refusal != "" {
 				recordSessionRefusal(session, groupID, model, time.Now())
 			}
-			if _, errEmit := hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: chunk.Payload, HostCallbackID: callbackID}); errEmit != nil {
+			payload := chunk.Payload
+			if shiftIndices {
+				payload, _ = shiftClaudeStreamChunk(payload, false, "")
+			}
+			if _, errEmit := hostCall(methodHostStreamEmit, hostStreamEmit{StreamID: target, Payload: payload, HostCallbackID: callbackID}); errEmit != nil {
 				// The client stream is gone; release the target stream. Its close result has no reader.
 				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: source, HostCallbackID: callbackID})
 				return
@@ -344,8 +354,11 @@ func withModel(payload []byte, model string) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(payload, &body); errUnmarshal != nil {
 		return nil, fmt.Errorf("decode group request body: %w", errUnmarshal)
 	}
+	if rawMessages, ok := body["messages"]; ok {
+		body["messages"] = stripNoticeFromMessages(rawMessages)
+	}
 	if _, ok := body["model"]; !ok {
-		return payload, nil
+		return json.Marshal(body)
 	}
 	encoded, _ := json.Marshal(model)
 	body["model"] = encoded

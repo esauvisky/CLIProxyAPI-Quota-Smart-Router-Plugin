@@ -79,7 +79,7 @@ func countPromptTokens(payload []byte) (int, error) {
 func collectText(value any, segments *[]string) {
 	switch typed := value.(type) {
 	case string:
-		if typed != "" {
+		if typed != "" && !strings.HasPrefix(strings.TrimSpace(typed), noticePrefix) {
 			*segments = append(*segments, typed)
 		}
 	case []any:

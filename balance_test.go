@@ -60,6 +60,7 @@ func resetHostState(t *testing.T) {
 	stateMu.Lock()
 	sessions = make(map[string]*sessionBinding)
 	sessionRefusals = make(map[string]map[string]time.Time)
+	sessionGroupModels = make(map[string]string)
 	decisions = nil
 	stateMu.Unlock()
 	t.Cleanup(func() {

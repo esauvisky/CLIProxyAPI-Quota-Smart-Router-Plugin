@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -14,13 +15,18 @@ const (
 	// safeguard refusals can switch to the next model in the group before any chunk is sent.
 	streamPrefetchBytes = 512
 
-	claudeRefusalRetryNudge = "Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."
+	claudeRefusalRetryNudge  = "Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."
 	claudeRefusalReplacement = "Your previous response was interrupted mid-stream. Continue directly from where it stopped."
+
+	noticePrefix = "⚡ [Quota Smart Router] "
 )
 
-// sessionRefusals tracks models that refused mid-stream (after visible output was already
-// flushed to the client), keyed by session + "\x00" + groupID -> model -> time.
+// sessionRefusals tracks models that refused in a session, keyed by session + "\x00" + groupID -> model -> time.
 var sessionRefusals = make(map[string]map[string]time.Time)
+
+// sessionGroupModels remembers the last model that served a group in a session so the client
+// is notified whenever the active model changes.
+var sessionGroupModels = make(map[string]string)
 
 func recordSessionRefusal(session, groupID, model string, now time.Time) {
 	if session == "" {
@@ -446,4 +452,265 @@ func prefetchStream(sourceStreamID, callbackID string) ([][]byte, bool, error) {
 			return prefetched, false, nil
 		}
 	}
+}
+
+func updateSessionGroupModel(session, groupID, served string) string {
+	if session == "" {
+		return ""
+	}
+	key := session + "\x00" + groupID
+	stateMu.Lock()
+	prev := sessionGroupModels[key]
+	sessionGroupModels[key] = served
+	stateMu.Unlock()
+	return prev
+}
+
+// buildGroupNotice formats a user-visible line when a model in the group failed/refused and CPA
+// recovered on a fallback model, or when the active model for the session changed.
+func buildGroupNotice(group modelGroup, attempts []groupAttempt, served, prevModel string) string {
+	hadActiveFailure := false
+	var prior []string
+	for _, attempt := range attempts {
+		if attempt.Model == served && attempt.Result == "served" {
+			break
+		}
+		if strings.HasPrefix(attempt.Result, "failed: ") {
+			hadActiveFailure = true
+		}
+		detail := strings.TrimPrefix(attempt.Result, "failed: ")
+		detail = strings.TrimPrefix(detail, "skipped: ")
+		prior = append(prior, fmt.Sprintf("%s (%s)", attempt.Model, detail))
+	}
+	modelChanged := (prevModel != "" && prevModel != served) ||
+		(prevModel == "" && len(group.Models) > 0 && served != group.Models[0])
+	if !hadActiveFailure && !modelChanged {
+		return ""
+	}
+	if len(prior) > 0 {
+		return noticePrefix + strings.Join(prior, " → ") + " → switched to " + served
+	}
+	return fmt.Sprintf("%sswitched from %s → %s", noticePrefix, prevModel, served)
+}
+
+func effectiveFormat(exitFormat, sourceFormat string) string {
+	if exitFormat != "" {
+		return strings.ToLower(strings.TrimSpace(exitFormat))
+	}
+	return strings.ToLower(strings.TrimSpace(sourceFormat))
+}
+
+// injectNonStreamNotice prepends notice to a non-streaming response body.
+func injectNonStreamNotice(body []byte, format, notice string) []byte {
+	if notice == "" {
+		return body
+	}
+	var root map[string]json.RawMessage
+	if json.Unmarshal(body, &root) != nil {
+		return body
+	}
+	if rawContent, ok := root["content"]; ok {
+		var blocks []json.RawMessage
+		if json.Unmarshal(rawContent, &blocks) == nil {
+			noticeBlock, _ := json.Marshal(map[string]string{"type": "text", "text": notice})
+			root["content"], _ = json.Marshal(append([]json.RawMessage{noticeBlock}, blocks...))
+			if out, errMarshal := json.Marshal(root); errMarshal == nil {
+				return out
+			}
+		}
+	}
+	if rawChoices, ok := root["choices"]; ok {
+		var choices []map[string]json.RawMessage
+		if json.Unmarshal(rawChoices, &choices) == nil && len(choices) > 0 {
+			var msg map[string]json.RawMessage
+			if json.Unmarshal(choices[0]["message"], &msg) == nil {
+				var content string
+				if json.Unmarshal(msg["content"], &content) == nil {
+					msg["content"], _ = json.Marshal(notice + "\n\n" + content)
+					choices[0]["message"], _ = json.Marshal(msg)
+					root["choices"], _ = json.Marshal(choices)
+					if out, errMarshal := json.Marshal(root); errMarshal == nil {
+						return out
+					}
+				}
+			}
+		}
+	}
+	return body
+}
+
+// injectStreamNotice injects notice at the start of prefetched stream chunks. It returns the
+// updated chunks and whether subsequent chunks in forwardStream must shift Claude content_block
+// indices by +1.
+func injectStreamNotice(prefetched [][]byte, format, notice string) ([][]byte, bool) {
+	if notice == "" || len(prefetched) == 0 {
+		return prefetched, false
+	}
+	if format == "claude" || bytes.Contains(prefetched[0], []byte(`"message_start"`)) {
+		textJSON, _ := json.Marshal(notice)
+		noticeSSE := fmt.Sprintf(
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
+				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":%s}}\n\n"+
+				"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			string(textJSON),
+		)
+		out := make([][]byte, 0, len(prefetched)+1)
+		inserted := false
+		for _, chunk := range prefetched {
+			shifted, afterStart := shiftClaudeStreamChunk(chunk, !inserted, noticeSSE)
+			if afterStart {
+				inserted = true
+			}
+			out = append(out, shifted)
+		}
+		if !inserted {
+			out = append([][]byte{[]byte(noticeSSE)}, out...)
+		}
+		return out, true
+	}
+	// OpenAI chat SSE: emit a leading delta chunk with the notice.
+	textJSON, _ := json.Marshal(notice + "\n\n")
+	head := fmt.Sprintf("data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":%s}}]}\n\n", string(textJSON))
+	return append([][]byte{[]byte(head)}, prefetched...), false
+}
+
+// shiftClaudeStreamChunk increments top-level content_block_* indices by +1 and optionally
+// inserts noticeSSE right after the message_start event.
+func shiftClaudeStreamChunk(chunk []byte, insertAfterMessageStart bool, noticeSSE string) ([]byte, bool) {
+	lines := bytes.Split(chunk, []byte("\n"))
+	var out bytes.Buffer
+	inserted := false
+	afterMessageStartData := false
+	for i, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("data:")) {
+			data := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+			if len(data) > 0 && data[0] == '{' {
+				var obj map[string]json.RawMessage
+				if json.Unmarshal(data, &obj) == nil {
+					var typ string
+					_ = json.Unmarshal(obj["type"], &typ)
+					switch typ {
+					case "message_start":
+						if insertAfterMessageStart && !inserted {
+							afterMessageStartData = true
+						}
+					case "content_block_start", "content_block_delta", "content_block_stop":
+						var idx int
+						if json.Unmarshal(obj["index"], &idx) == nil {
+							obj["index"] = json.RawMessage(strconv.Itoa(idx + 1))
+							if updated, errMarshal := json.Marshal(obj); errMarshal == nil {
+								line = append([]byte("data: "), updated...)
+							}
+						}
+					}
+				}
+			}
+		}
+		out.Write(line)
+		if i < len(lines)-1 {
+			out.WriteByte('\n')
+		}
+		if afterMessageStartData && len(trimmed) == 0 && !inserted {
+			out.WriteString(noticeSSE)
+			inserted = true
+			afterMessageStartData = false
+		}
+	}
+	if afterMessageStartData && !inserted {
+		if !bytes.HasSuffix(out.Bytes(), []byte("\n\n")) {
+			out.WriteByte('\n')
+		}
+		out.WriteString(noticeSSE)
+		inserted = true
+	}
+	return out.Bytes(), inserted
+}
+
+// stripNoticeFromMessages removes previously injected Quota Smart Router notice blocks from
+// conversation history so upstream models never see them.
+func stripNoticeFromMessages(rawMessages json.RawMessage) json.RawMessage {
+	if !bytes.Contains(rawMessages, []byte(noticePrefix)) {
+		return rawMessages
+	}
+	var messages []map[string]json.RawMessage
+	if json.Unmarshal(rawMessages, &messages) != nil {
+		return rawMessages
+	}
+	for i, msg := range messages {
+		rawContent, ok := msg["content"]
+		if !ok || !bytes.Contains(rawContent, []byte(noticePrefix)) {
+			continue
+		}
+		var text string
+		if json.Unmarshal(rawContent, &text) == nil {
+			if strings.HasPrefix(text, noticePrefix) {
+				if idx := strings.Index(text, "\n\n"); idx != -1 {
+					msg["content"], _ = json.Marshal(text[idx+2:])
+					messages[i] = msg
+				}
+			}
+			continue
+		}
+		var blocks []map[string]json.RawMessage
+		if json.Unmarshal(rawContent, &blocks) != nil {
+			continue
+		}
+		filtered := make([]map[string]json.RawMessage, 0, len(blocks))
+		for _, block := range blocks {
+			var blockText string
+			if json.Unmarshal(block["text"], &blockText) == nil && strings.HasPrefix(strings.TrimSpace(blockText), noticePrefix) {
+				continue
+			}
+			filtered = append(filtered, block)
+		}
+		if len(filtered) > 0 && len(filtered) != len(blocks) {
+			msg["content"], _ = json.Marshal(filtered)
+			messages[i] = msg
+		}
+	}
+	out, errMarshal := json.Marshal(messages)
+	if errMarshal != nil {
+		return rawMessages
+	}
+	return out
+}
+
+type requestInterceptRequest struct {
+	Body []byte `json:"Body"`
+}
+
+type requestInterceptResponse struct {
+	Body []byte `json:"Body,omitempty"`
+}
+
+// handleRequestIntercept strips Quota Smart Router notice blocks from all incoming requests
+// (including when the user switches away from a group model mid-session) so they never enter
+// any model's context.
+func handleRequestIntercept(raw []byte) ([]byte, error) {
+	var req requestInterceptRequest
+	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
+		return nil, errUnmarshal
+	}
+	if !bytes.Contains(req.Body, []byte(noticePrefix)) {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	var body map[string]json.RawMessage
+	if json.Unmarshal(req.Body, &body) != nil {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	rawMessages, ok := body["messages"]
+	if !ok {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	cleaned := stripNoticeFromMessages(rawMessages)
+	if bytes.Equal(cleaned, rawMessages) {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	body["messages"] = cleaned
+	updated, errMarshal := json.Marshal(body)
+	if errMarshal != nil {
+		return okEnvelope(requestInterceptResponse{})
+	}
+	return okEnvelope(requestInterceptResponse{Body: updated})
 }
