@@ -132,6 +132,9 @@ func TestExecuteGroupStreamForwardsChunks(t *testing.T) {
 	}
 	var open executorStreamOpenResponse
 	decodeOK(t, raw, &open)
+	if got := <-emitted; !strings.Contains(got, "switched to deepseek-v4.1-flash-uncensored") {
+		t.Fatalf("notice event = %q", got)
+	}
 	if got := <-emitted; got != "emit:data: one\n\n" {
 		t.Fatalf("first event = %q", got)
 	}
