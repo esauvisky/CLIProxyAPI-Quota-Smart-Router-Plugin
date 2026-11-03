@@ -144,7 +144,8 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 		return nil, fmt.Errorf("model group %s is not configured", req.Model)
 	}
 	now := time.Now()
-	session := sessionKey(req.Metadata)
+	session := groupSessionKey(req)
+	aux := isAuxiliaryRequest(req.Payload)
 	resetRefusalsIfAllRefused(cfg, session, group, now)
 	var attempts []groupAttempt
 	var lastErr error
@@ -185,13 +186,16 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 			continue
 		}
 		attempts = append(attempts, groupAttempt{Model: model, Result: "served"})
-		recordGroupDecision(group, attempts, model)
-		prevModel := updateSessionGroupModel(session, group.ID, model)
-		notice := buildGroupNotice(group, attempts, model, prevModel)
-		bodyOut := injectNonStreamNotice(resp.Body, effectiveFormat(req.Format, req.SourceFormat), notice)
+		recordGroupDecision(group, session, attempts, model)
+		bodyOut := resp.Body
+		if !aux {
+			prevModel := updateSessionGroupModel(session, group.ID, model)
+			notice := buildGroupNotice(group, attempts, model, prevModel)
+			bodyOut = injectNonStreamNotice(resp.Body, effectiveFormat(req.Format, req.SourceFormat), notice)
+		}
 		return okEnvelope(executorResponse{Payload: bodyOut, Headers: resp.Headers})
 	}
-	recordGroupDecision(group, attempts, "")
+	recordGroupDecision(group, session, attempts, "")
 	return nil, groupFailure(group, attempts, lastErr)
 }
 
@@ -210,7 +214,8 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		return nil, fmt.Errorf("model group %s is not configured", req.Model)
 	}
 	now := time.Now()
-	session := sessionKey(req.Metadata)
+	session := groupSessionKey(req)
+	aux := isAuxiliaryRequest(req.Payload)
 	resetRefusalsIfAllRefused(cfg, session, group, now)
 	var attempts []groupAttempt
 	var lastErr error
@@ -252,14 +257,17 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 			continue
 		}
 		attempts = append(attempts, groupAttempt{Model: model, Result: "served"})
-		recordGroupDecision(group, attempts, model)
-		prevModel := updateSessionGroupModel(session, group.ID, model)
-		notice := buildGroupNotice(group, attempts, model, prevModel)
-		prefetched, shiftIndices := injectStreamNotice(prefetched, effectiveFormat(req.Format, req.SourceFormat), notice)
+		recordGroupDecision(group, session, attempts, model)
+		shiftIndices := false
+		if !aux {
+			prevModel := updateSessionGroupModel(session, group.ID, model)
+			notice := buildGroupNotice(group, attempts, model, prevModel)
+			prefetched, shiftIndices = injectStreamNotice(prefetched, effectiveFormat(req.Format, req.SourceFormat), notice)
+		}
 		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID, prefetched, done, shiftIndices, session, group.ID, model)
 		return okEnvelope(executorStreamOpenResponse{Headers: resp.Headers})
 	}
-	recordGroupDecision(group, attempts, "")
+	recordGroupDecision(group, session, attempts, "")
 	return nil, groupFailure(group, attempts, lastErr)
 }
 
@@ -378,12 +386,12 @@ func groupFailure(group modelGroup, attempts []groupAttempt, lastErr error) erro
 	return &statusError{Code: "model_group_exhausted", Message: fmt.Sprintf("model group %s: every model failed (%s)", group.ID, strings.Join(parts, "; ")), HTTPStatus: status}
 }
 
-func recordGroupDecision(group modelGroup, attempts []groupAttempt, served string) {
+func recordGroupDecision(group modelGroup, session string, attempts []groupAttempt, served string) {
 	reason := "every model failed"
 	if served != "" {
 		reason = "served by " + served
 	}
 	stateMu.Lock()
-	recordDecision(decision{Time: time.Now(), Kind: "group", Model: group.ID, AuthID: served, Reason: reason, Attempts: attempts})
+	recordDecision(decision{Time: time.Now(), Kind: "group", Model: group.ID, Session: session, AuthID: served, Reason: reason, Attempts: attempts})
 	stateMu.Unlock()
 }

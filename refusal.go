@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -85,10 +86,110 @@ func resetRefusalsIfAllRefused(cfg pluginConfig, session string, group modelGrou
 	clearSessionRefusals(session, group.ID)
 }
 
+// groupSessionKey extracts the session identity for a group executor request from host metadata,
+// the request payload (Claude metadata.user_id or OpenAI/Codex session fields), or headers.
+func groupSessionKey(req executorRequest) string {
+	if s := sessionKey(req.Metadata); s != "" {
+		return s
+	}
+	var body struct {
+		SessionID      string `json:"session_id"`
+		ConversationID string `json:"conversation_id"`
+		PromptCacheKey string `json:"prompt_cache_key"`
+		Metadata       struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+		Request struct {
+			Metadata struct {
+				UserID string `json:"user_id"`
+			} `json:"metadata"`
+		} `json:"request"`
+	}
+	if len(req.Payload) > 0 && json.Unmarshal(req.Payload, &body) == nil {
+		userID := strings.TrimSpace(body.Metadata.UserID)
+		if userID == "" {
+			userID = strings.TrimSpace(body.Request.Metadata.UserID)
+		}
+		if strings.HasPrefix(userID, "{") {
+			var parsed struct {
+				SessionID string `json:"session_id"`
+			}
+			if json.Unmarshal([]byte(userID), &parsed) == nil && parsed.SessionID != "" {
+				return "claude:" + parsed.SessionID
+			}
+		} else if idx := strings.LastIndex(userID, "_session_"); idx != -1 {
+			if sid := strings.TrimSpace(userID[idx+len("_session_"):]); sid != "" {
+				return "claude:" + sid
+			}
+		}
+		for _, candidate := range []string{body.SessionID, body.ConversationID, body.PromptCacheKey} {
+			if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+				return "session:" + trimmed
+			}
+		}
+	}
+	for _, header := range []string{"Session_id", "X-Session-Id", "Conversation_id", "X-Claude-Code-Session-Id"} {
+		if val := strings.TrimSpace(http.Header(req.Headers).Get(header)); val != "" {
+			return "header:" + val
+		}
+	}
+	return ""
+}
+
+// isAuxiliaryRequest reports whether the request is a background helper call (such as Claude Code's
+// away_summary recap, prompt_suggestion, session rename, or agent_summary) where injecting a
+// human-facing router banner would corrupt the caller's parsed output.
+func isAuxiliaryRequest(payload []byte) bool {
+	for _, marker := range []string{
+		"The user stepped away and is coming back. Recap in under",
+		"Reply with ONLY the suggestion, no quotes or explanation.",
+		`Return JSON with a "name" field.`,
+		"most recent action in 3-5 words using present tense (-ing).",
+		"Never consult the advisor tool.",
+		"Your task is to create a detailed summary of the conversation",
+	} {
+		if bytes.Contains(payload, []byte(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+var textRefusalPhrases = []string{
+	"i can't help with",
+	"i cannot help with",
+	"i can't assist with",
+	"i cannot assist with",
+	"i'm unable to help",
+	"i am unable to help",
+	"i'm unable to assist",
+	"i am unable to assist",
+	"i can't provide",
+	"i cannot provide",
+	"i can't fulfill",
+	"i cannot fulfill",
+	"i can't comply",
+	"i cannot comply",
+	"i must refuse",
+	"i have to refuse",
+	"which i can't help with",
+	"which i cannot help with",
+}
+
+func detectTextRefusal(text string) string {
+	normalized := strings.ToLower(strings.NewReplacer("’", "'", "‘", "'").Replace(text))
+	for _, phrase := range textRefusalPhrases {
+		if strings.Contains(normalized, phrase) {
+			return "refusal (text)"
+		}
+	}
+	return ""
+}
+
 // inspectPayload parses a non-streaming response body or one JSON event from an SSE chunk and
-// returns any refusal/error reason, the number of visible text bytes, whether a tool call is
-// present, and whether the JSON matches a known model response envelope.
-func inspectPayload(raw []byte) (refusal string, visibleBytes int, sawToolUse bool, sawEnvelope bool) {
+// returns any refusal/error reason, the visible text, whether a tool call is present, and whether
+// the JSON matches a known model response envelope.
+func inspectPayload(raw []byte) (refusal string, visibleText string, sawToolUse bool, sawEnvelope bool) {
 	var msg struct {
 		Type  string `json:"type"`
 		Error *struct {
@@ -158,7 +259,7 @@ func inspectPayload(raw []byte) (refusal string, visibleBytes int, sawToolUse bo
 		Candidates []geminiCandidate `json:"candidates"`
 	}
 	if errUnmarshal := json.Unmarshal(raw, &msg); errUnmarshal != nil {
-		return "", 0, false, false
+		return "", "", false, false
 	}
 	sawEnvelope = msg.StopReason != "" || msg.Delta != nil || msg.ContentBlock != nil ||
 		len(msg.Content) > 0 || len(msg.Choices) > 0 || len(msg.Candidates) > 0 ||
@@ -167,23 +268,24 @@ func inspectPayload(raw []byte) (refusal string, visibleBytes int, sawToolUse bo
 
 	if msg.Type == "error" || (msg.Error != nil && (msg.Error.Message != "" || msg.Error.Type != "")) {
 		if msg.Error != nil && msg.Error.Message != "" {
-			return "upstream error: " + msg.Error.Message, 0, false, true
+			return "upstream error: " + msg.Error.Message, "", false, true
 		}
-		return "upstream error", 0, false, true
+		return "upstream error", "", false, true
 	}
 	if reason := claudeStopRefusal(msg.StopReason, msg.StopDetails); reason != "" {
-		return reason, 0, false, true
+		return reason, "", false, true
 	}
+	var textBuf strings.Builder
 	if msg.Delta != nil {
 		if reason := claudeStopRefusal(msg.Delta.StopReason, msg.Delta.StopDetails); reason != "" {
-			return reason, 0, false, true
+			return reason, "", false, true
 		}
 		if msg.Delta.Refusal != "" {
-			return "refusal", 0, false, true
+			return "refusal", "", false, true
 		}
 		switch msg.Delta.Type {
 		case "text_delta":
-			visibleBytes += len(msg.Delta.Text)
+			textBuf.WriteString(msg.Delta.Text)
 		case "input_json_delta":
 			if msg.Delta.PartialJSON != "" {
 				sawToolUse = true
@@ -195,29 +297,29 @@ func inspectPayload(raw []byte) (refusal string, visibleBytes int, sawToolUse bo
 		case "tool_use", "server_tool_use":
 			sawToolUse = true
 		case "text":
-			visibleBytes += len(msg.ContentBlock.Text)
+			textBuf.WriteString(msg.ContentBlock.Text)
 		}
 	}
 	if len(msg.Content) > 0 {
 		ref, vis, tool := inspectClaudeContent(msg.Content)
 		if ref != "" {
-			return ref, 0, false, true
+			return ref, "", false, true
 		}
-		visibleBytes += vis
+		textBuf.WriteString(vis)
 		sawToolUse = sawToolUse || tool
 	}
 	if msg.IncompleteDetails != nil && msg.IncompleteDetails.Reason == "content_filter" {
-		return "refusal (content_filter)", 0, false, true
+		return "refusal (content_filter)", "", false, true
 	}
 	if msg.Response != nil && msg.Response.IncompleteDetails != nil && msg.Response.IncompleteDetails.Reason == "content_filter" {
-		return "refusal (content_filter)", 0, false, true
+		return "refusal (content_filter)", "", false, true
 	}
 	if msg.Type == "response.output_text.delta" {
 		var deltaEvt struct {
 			Delta string `json:"delta"`
 		}
 		if json.Unmarshal(raw, &deltaEvt) == nil {
-			visibleBytes += len(deltaEvt.Delta)
+			textBuf.WriteString(deltaEvt.Delta)
 		}
 	}
 	if msg.Type == "response.function_call_arguments.delta" || (msg.Item != nil && msg.Item.Type == "function_call") {
@@ -229,39 +331,39 @@ func inspectPayload(raw []byte) (refusal string, visibleBytes int, sawToolUse bo
 		}
 		for _, part := range item.Content {
 			if part.Type == "refusal" || part.Refusal != "" {
-				return "refusal", 0, false, true
+				return "refusal", "", false, true
 			}
-			visibleBytes += len(strings.TrimSpace(part.Text))
+			textBuf.WriteString(part.Text)
 		}
 	}
 	for _, choice := range msg.Choices {
 		if choice.FinishReason == "content_filter" {
-			return "refusal (content_filter)", 0, false, true
+			return "refusal (content_filter)", "", false, true
 		}
 		if choice.Message != nil {
 			if choice.Message.Refusal != "" {
-				return "refusal", 0, false, true
+				return "refusal", "", false, true
 			}
 			if len(choice.Message.ToolCalls) > 0 || choice.Message.FunctionCall != nil {
 				sawToolUse = true
 			}
-			visibleBytes += inspectOpenAIMessageContent(choice.Message.Content)
+			textBuf.WriteString(inspectOpenAIMessageContent(choice.Message.Content))
 		}
 		if choice.Delta != nil {
 			if choice.Delta.Refusal != "" {
-				return "refusal", 0, false, true
+				return "refusal", "", false, true
 			}
 			if len(choice.Delta.ToolCalls) > 0 || choice.Delta.FunctionCall != nil {
 				sawToolUse = true
 			}
-			visibleBytes += len(choice.Delta.Content)
+			textBuf.WriteString(choice.Delta.Content)
 		}
 	}
 	if msg.PromptFeedback != nil && msg.PromptFeedback.BlockReason != "" {
-		return "refusal (" + msg.PromptFeedback.BlockReason + ")", 0, false, true
+		return "refusal (" + msg.PromptFeedback.BlockReason + ")", "", false, true
 	}
 	if msg.Response != nil && msg.Response.PromptFeedback != nil && msg.Response.PromptFeedback.BlockReason != "" {
-		return "refusal (" + msg.Response.PromptFeedback.BlockReason + ")", 0, false, true
+		return "refusal (" + msg.Response.PromptFeedback.BlockReason + ")", "", false, true
 	}
 	candidates := msg.Candidates
 	if msg.Response != nil && len(msg.Response.Candidates) > 0 {
@@ -269,18 +371,18 @@ func inspectPayload(raw []byte) (refusal string, visibleBytes int, sawToolUse bo
 	}
 	for _, cand := range candidates {
 		if isGeminiRefusalFinishReason(cand.FinishReason) {
-			return "refusal (" + cand.FinishReason + ")", 0, false, true
+			return "refusal (" + cand.FinishReason + ")", "", false, true
 		}
 		for _, part := range cand.Content.Parts {
 			if part.FunctionCall != nil {
 				sawToolUse = true
 			}
 			if !part.Thought {
-				visibleBytes += len(part.Text)
+				textBuf.WriteString(part.Text)
 			}
 		}
 	}
-	return "", visibleBytes, sawToolUse, sawEnvelope
+	return "", textBuf.String(), sawToolUse, sawEnvelope
 }
 
 type geminiCandidate struct {
@@ -306,10 +408,10 @@ func claudeStopRefusal(stopReason string, details *struct {
 	return "refusal"
 }
 
-func inspectClaudeContent(raw json.RawMessage) (string, int, bool) {
+func inspectClaudeContent(raw json.RawMessage) (string, string, bool) {
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
-		return "", len(strings.TrimSpace(text)), false
+		return "", strings.TrimSpace(text), false
 	}
 	var blocks []struct {
 		Type    string `json:"type"`
@@ -317,42 +419,42 @@ func inspectClaudeContent(raw json.RawMessage) (string, int, bool) {
 		Refusal string `json:"refusal"`
 	}
 	if json.Unmarshal(raw, &blocks) != nil {
-		return "", 0, false
+		return "", "", false
 	}
-	visible := 0
+	var visible strings.Builder
 	tool := false
 	for _, block := range blocks {
 		switch block.Type {
 		case "refusal":
-			return "refusal", 0, false
+			return "refusal", "", false
 		case "tool_use", "server_tool_use":
 			tool = true
 		case "text":
-			visible += len(strings.TrimSpace(block.Text))
+			visible.WriteString(block.Text)
 		}
 	}
-	return "", visible, tool
+	return "", strings.TrimSpace(visible.String()), tool
 }
 
-func inspectOpenAIMessageContent(raw json.RawMessage) int {
+func inspectOpenAIMessageContent(raw json.RawMessage) string {
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
-		return len(strings.TrimSpace(text))
+		return strings.TrimSpace(text)
 	}
 	var parts []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(raw, &parts) != nil {
-		return 0
+		return ""
 	}
-	total := 0
+	var total strings.Builder
 	for _, part := range parts {
 		if part.Type != "thinking" && part.Type != "reasoning" {
-			total += len(strings.TrimSpace(part.Text))
+			total.WriteString(part.Text)
 		}
 	}
-	return total
+	return strings.TrimSpace(total.String())
 }
 
 func isGeminiRefusalFinishReason(reason string) bool {
@@ -365,14 +467,15 @@ func isGeminiRefusalFinishReason(reason string) bool {
 }
 
 // inspectStreamChunk inspects all JSON objects in an SSE or raw-JSON stream chunk.
-func inspectStreamChunk(payload []byte) (refusal string, visibleBytes int, sawToolUse bool, sawEnvelope bool) {
+func inspectStreamChunk(payload []byte) (refusal string, visibleText string, sawToolUse bool, sawEnvelope bool) {
 	trimmed := bytes.TrimSpace(payload)
 	if len(trimmed) == 0 {
-		return "", 0, false, false
+		return "", "", false, false
 	}
 	if trimmed[0] == '{' {
 		return inspectPayload(trimmed)
 	}
+	var textBuf strings.Builder
 	for _, line := range bytes.Split(payload, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -384,13 +487,13 @@ func inspectStreamChunk(payload []byte) (refusal string, visibleBytes int, sawTo
 		}
 		ref, vis, tool, env := inspectPayload(data)
 		if ref != "" {
-			return ref, 0, false, true
+			return ref, "", false, true
 		}
-		visibleBytes += vis
+		textBuf.WriteString(vis)
 		sawToolUse = sawToolUse || tool
 		sawEnvelope = sawEnvelope || env
 	}
-	return "", visibleBytes, sawToolUse, sawEnvelope
+	return "", textBuf.String(), sawToolUse, sawEnvelope
 }
 
 // checkNonStreamResponse returns an error if a non-streaming response is a refusal or has no
@@ -400,7 +503,12 @@ func checkNonStreamResponse(body []byte) error {
 	if refusal != "" {
 		return fmt.Errorf("%s", refusal)
 	}
-	if sawEnvelope && visible == 0 && !sawTool {
+	if !sawTool {
+		if textRefusal := detectTextRefusal(visible); textRefusal != "" {
+			return fmt.Errorf("%s", textRefusal)
+		}
+	}
+	if sawEnvelope && len(strings.TrimSpace(visible)) == 0 && !sawTool {
 		return fmt.Errorf("empty response (no text or tool calls)")
 	}
 	return nil
@@ -412,7 +520,7 @@ func checkNonStreamResponse(body []byte) error {
 // switch to the next model in the group before emitting anything to the client.
 func prefetchStream(sourceStreamID, callbackID string) ([][]byte, bool, error) {
 	var prefetched [][]byte
-	totalVisible := 0
+	var visibleBuf strings.Builder
 	sawTool := false
 	sawEnvelope := false
 	for {
@@ -432,9 +540,15 @@ func prefetchStream(sourceStreamID, callbackID string) ([][]byte, bool, error) {
 				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: sourceStreamID, HostCallbackID: callbackID})
 				return nil, false, fmt.Errorf("%s", refusal)
 			}
-			totalVisible += vis
+			visibleBuf.WriteString(vis)
 			sawTool = sawTool || tool
 			sawEnvelope = sawEnvelope || env
+			if !sawTool {
+				if textRefusal := detectTextRefusal(visibleBuf.String()); textRefusal != "" {
+					_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: sourceStreamID, HostCallbackID: callbackID})
+					return nil, false, fmt.Errorf("%s", textRefusal)
+				}
+			}
 			prefetched = append(prefetched, chunk.Payload)
 		}
 		if chunk.Error != "" {
@@ -442,13 +556,13 @@ func prefetchStream(sourceStreamID, callbackID string) ([][]byte, bool, error) {
 			return nil, false, fmt.Errorf("%s", chunk.Error)
 		}
 		if chunk.Done {
-			if sawEnvelope && totalVisible == 0 && !sawTool {
+			if sawEnvelope && len(strings.TrimSpace(visibleBuf.String())) == 0 && !sawTool {
 				_, _ = hostCall(methodHostModelStreamClose, hostStreamRef{StreamID: sourceStreamID, HostCallbackID: callbackID})
 				return nil, false, fmt.Errorf("empty response (no text or tool calls)")
 			}
 			return prefetched, true, nil
 		}
-		if sawTool || totalVisible >= streamPrefetchBytes {
+		if sawTool || visibleBuf.Len() >= streamPrefetchBytes {
 			return prefetched, false, nil
 		}
 	}
@@ -512,7 +626,7 @@ func injectNonStreamNotice(body []byte, format, notice string) []byte {
 	if rawContent, ok := root["content"]; ok {
 		var blocks []json.RawMessage
 		if json.Unmarshal(rawContent, &blocks) == nil {
-			noticeBlock, _ := json.Marshal(map[string]string{"type": "text", "text": notice})
+			noticeBlock, _ := json.Marshal(map[string]string{"type": "text", "text": notice + "\n\n"})
 			root["content"], _ = json.Marshal(append([]json.RawMessage{noticeBlock}, blocks...))
 			if out, errMarshal := json.Marshal(root); errMarshal == nil {
 				return out
@@ -547,7 +661,7 @@ func injectStreamNotice(prefetched [][]byte, format, notice string) ([][]byte, b
 		return prefetched, false
 	}
 	if format == "claude" || bytes.Contains(prefetched[0], []byte(`"message_start"`)) {
-		textJSON, _ := json.Marshal(notice)
+		textJSON, _ := json.Marshal(notice + "\n\n")
 		noticeSSE := fmt.Sprintf(
 			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"+
 				"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":%s}}\n\n"+

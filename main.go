@@ -63,7 +63,7 @@ const (
 	schemaVersion uint32 = 9
 
 	pluginName    = "Quota Smart Router"
-	pluginVersion = "0.4.2"
+	pluginVersion = "0.4.3"
 	pluginAuthor  = "esauvisky"
 	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin"
 	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Quota-Smart-Router-Plugin/main/assets/logo.png"

@@ -175,8 +175,8 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 					"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\"}}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-deepseek-v4.1-flash-uncensored":
-				// Simulate an empty end_turn (e.g. Antigravity translating a safety-blocked empty response).
-				chunk := "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n"
+				// Simulate a plain-text refusal (e.g. GPT/OpenAI refusing with normal end_turn).
+				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"The goal was to make Frida harder to detect, which I can’t help with.\"}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-abliterated":
 				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the answer.\"}}\n\n"
@@ -196,8 +196,9 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 		return nil, nil
 	})
 
-	reqJSON := `{"Model":"uncensored-models","SourceFormat":"claude","Format":"claude","Stream":true,"Metadata":{"canonical_session_id":"sess-1"},"Payload":"` +
-		b64(`{"model":"uncensored-models","messages":[{"role":"user","content":"`+claudeRefusalRetryNudge+`"}]}`) + `","stream_id":"dst"}`
+	// Session ID is inside payload metadata.user_id (not top-level req.Metadata), matching production.
+	reqJSON := `{"Model":"uncensored-models","SourceFormat":"claude","Format":"claude","Stream":true,"Payload":"` +
+		b64(`{"model":"uncensored-models","metadata":{"user_id":"user_abc_session_fd8e6192-7710-4bb9-8cf9-bc9a30d6549f"},"messages":[{"role":"user","content":"`+claudeRefusalRetryNudge+`"}]}`) + `","stream_id":"dst"}`
 	if _, errExec := executeGroupStream([]byte(reqJSON), groupConfig()); errExec != nil {
 		t.Fatalf("executeGroupStream() error = %v", errExec)
 	}
