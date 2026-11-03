@@ -172,8 +172,8 @@ func validateConfig(cfg pluginConfig) error {
 	if cfg.MinRemaining < 0 || cfg.MinRemaining >= 1 {
 		return fmt.Errorf("min_remaining must be in [0, 1), got %v", cfg.MinRemaining)
 	}
-	if cfg.IdleMinutes <= 0 {
-		return fmt.Errorf("idle_minutes must be positive, got %d", cfg.IdleMinutes)
+	if cfg.IdleMinutes < 0 {
+		return fmt.Errorf("idle_minutes must be non-negative, got %d", cfg.IdleMinutes)
 	}
 	ids := make(map[string]bool, len(cfg.Groups))
 	for index, group := range cfg.Groups {
@@ -227,7 +227,7 @@ func pluginRegistration() registration {
 			ConfigFields: []configField{
 				{Name: "management_key", Type: "string", Description: "Required: CPA management key used to read provider quota and save settings from the UI."},
 				{Name: "min_remaining", Type: "number", Default: 0.02, Description: "Quota fraction (0-1) every window of a credential must keep for it to be used."},
-				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a credential session binding may re-rank."},
+				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a credential or smart group session binding may re-rank (0 disables session stickiness)."},
 				{Name: "groups", Type: "array", Description: "Smart Groups ({id, name, strategy, models}): virtual models that automatically route around safeguard refusals, errors, and low quota with 5m cache stickiness."},
 				{Name: "features", Type: "object", Description: "Safeguard and client-wire adaptation toggles and custom notice_prefix."},
 			},

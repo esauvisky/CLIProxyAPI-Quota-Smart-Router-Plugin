@@ -490,8 +490,8 @@ const uiHTML = `<!doctype html>
           <input class="input" type="number" step="any" min="0" max="99.999" data-field="min_remaining" data-setting="min_remaining_pct">
           <span class="hint">Every applicable quota window must keep at least this much for a credential to be used.</span></label>
         <label class="field"><span class="cfg-key">Idle minutes</span>
-          <input class="input" type="number" step="1" min="1" data-field="idle_minutes" data-setting="idle_minutes">
-          <span class="hint">A session without prompts for this long may move to another credential.</span></label>
+          <input class="input" type="number" step="1" min="0" data-field="idle_minutes" data-setting="idle_minutes">
+          <span class="hint">A session without prompts for this long may move to another credential or group model (0 disables stickiness).</span></label>
       </div>
     </section>
 
@@ -875,7 +875,7 @@ function validateDraft() {
   const minFrac = Number((minPct / 100).toPrecision(12));
   if (!Number.isFinite(minPct) || minFrac < 0 || minFrac >= 1) errors.push(['min_remaining', 'Min remaining must be a percentage in [0, 100), got "' + s.min_remaining_pct + '"']);
   const idle = parseNum(s.idle_minutes);
-  if (!Number.isInteger(idle) || idle <= 0) errors.push(['idle_minutes', 'Idle minutes must be a positive whole number, got "' + s.idle_minutes + '"']);
+  if (!Number.isInteger(idle) || idle < 0) errors.push(['idle_minutes', 'Idle minutes must be a non-negative whole number, got "' + s.idle_minutes + '"']);
 
   const groups = draft.groups.map(g => ({ id: g.id.trim(), name: g.name.trim(), strategy: normStrategy(g.strategy), models: g.models.map(m => m.trim()) }));
   const ids = new Set();

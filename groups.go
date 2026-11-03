@@ -223,7 +223,7 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 		recordGroupDecision(group, session, attempts, model)
 		bodyOut := resp.Body
 		if !aux {
-			prevModel := bindGroupSession(session, group.ID, model, prevLookupModel, now)
+			prevModel := bindGroupSession(cfg, session, group.ID, model, prevLookupModel, now)
 			notice := buildGroupNotice(cfg, group, attempts, model, prevModel)
 			bodyOut = injectNonStreamNotice(resp.Body, effectiveFormat(req.Format, req.SourceFormat), notice)
 		}
@@ -295,7 +295,7 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		recordGroupDecision(group, session, attempts, model)
 		shiftIndices := false
 		if !aux {
-			prevModel := bindGroupSession(session, group.ID, model, prevLookupModel, now)
+			prevModel := bindGroupSession(cfg, session, group.ID, model, prevLookupModel, now)
 			notice := buildGroupNotice(cfg, group, attempts, model, prevModel)
 			prefetched, shiftIndices = injectStreamNotice(prefetched, effectiveFormat(req.Format, req.SourceFormat), notice)
 		}

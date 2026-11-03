@@ -195,4 +195,12 @@ func TestValidateConfigGroups(t *testing.T) {
 	if errValidate := validateConfig(cfg); errValidate != nil {
 		t.Fatalf("validateConfig(valid) = %v", errValidate)
 	}
+	cfg.IdleMinutes = 0
+	if errValidate := validateConfig(cfg); errValidate != nil {
+		t.Fatalf("validateConfig(idle_minutes=0) = %v", errValidate)
+	}
+	cfg.IdleMinutes = -1
+	if errValidate := validateConfig(cfg); errValidate == nil {
+		t.Fatalf("validateConfig(idle_minutes=-1) = nil, want error")
+	}
 }

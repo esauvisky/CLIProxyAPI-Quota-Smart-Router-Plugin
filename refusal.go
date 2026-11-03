@@ -202,7 +202,7 @@ func orderByQuotaWeightedRandom(cfg pluginConfig, models []string, now time.Time
 
 // bindGroupSession records the model that served a group request and returns the model that had
 // served the previous turn in this session (empty if none).
-func bindGroupSession(session, groupID, served, prevFromLookup string, now time.Time) string {
+func bindGroupSession(cfg pluginConfig, session, groupID, served, prevFromLookup string, now time.Time) string {
 	if session == "" {
 		return prevFromLookup
 	}
@@ -223,7 +223,7 @@ func bindGroupSession(session, groupID, served, prevFromLookup string, now time.
 		Model:         groupID,
 		BoundAt:       boundAt,
 		LastSeen:      now,
-		IdleExpiresAt: now.Add(groupCacheTTL),
+		IdleExpiresAt: now.Add(time.Duration(cfg.IdleMinutes) * time.Minute),
 	}
 	stateMu.Unlock()
 	return prev

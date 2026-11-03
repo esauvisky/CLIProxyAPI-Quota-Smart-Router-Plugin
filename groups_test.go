@@ -344,7 +344,7 @@ func TestGroupRoutingStrategiesRandomAndQuotaSticky(t *testing.T) {
 		t.Fatalf("initial quota order = %v skipped=%v prev=%q", order1, skipped1, prev1)
 	}
 	chosen := order1[0]
-	bindGroupSession("sess-q", group.ID, chosen, prev1, now)
+	bindGroupSession(cfg, "sess-q", group.ID, chosen, prev1, now)
 
 	// Within 5 minutes, the chosen model is always placed first to preserve prompt cache.
 	for i := 0; i < 10; i++ {
@@ -352,6 +352,16 @@ func TestGroupRoutingStrategiesRandomAndQuotaSticky(t *testing.T) {
 		if order2[0] != chosen || prev2 != chosen {
 			t.Fatalf("sticky quota order[0] = %q (prev %q), want %q", order2[0], prev2, chosen)
 		}
+	}
+
+	// With idle_minutes = 0, session stickiness is disabled while previous model tracking remains.
+	cfgZero := cfg
+	cfgZero.IdleMinutes = 0
+	groupOrder := modelGroup{ID: "ord", Name: "Ord", Strategy: groupStrategyOrder, Models: []string{"m1", "m2", "m3"}}
+	bindGroupSession(cfgZero, "sess-zero", groupOrder.ID, "m2", "", now)
+	orderZero, skippedZero, prevZero := groupCandidateOrder(cfgZero, "sess-zero", groupOrder, now.Add(time.Second))
+	if orderZero[0] != "m1" || len(skippedZero) != 0 || prevZero != "m2" {
+		t.Fatalf("idle_minutes=0 order = %v skipped=%v prev=%q", orderZero, skippedZero, prevZero)
 	}
 }
 
