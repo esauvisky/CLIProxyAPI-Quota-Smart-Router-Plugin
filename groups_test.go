@@ -32,7 +32,7 @@ func TestRouteGroupOnlyClaimsGroupIDs(t *testing.T) {
 	if !resp.Handled || resp.TargetKind != "self" {
 		t.Fatalf("group route = %+v", resp)
 	}
-	raw, _ = routeGroup([]byte(`{"RequestedModel":"claude-opus-4-8"}`), groupConfig())
+	raw, _ = routeGroup([]byte(`{"RequestedModel":"claude-sonnet-5-5"}`), groupConfig())
 	resp = modelRouteResponse{}
 	decodeOK(t, raw, &resp)
 	if resp.Handled {

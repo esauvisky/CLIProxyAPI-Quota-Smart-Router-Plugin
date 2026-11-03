@@ -120,16 +120,54 @@ func groupModelRegistration(cfg pluginConfig) modelRegistrationResponse {
 	return modelRegistrationResponse{Provider: groupProvider, Models: models}
 }
 
-// routeGroup sends requests for group codenames to this plugin's executor.
+// routeGroup sends requests for group codenames (and Claude Code's hardcoded refusal-fallback or
+// subagent fallback model IDs when fallback_on_refusal is active) to this plugin's executor.
 func routeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	var req modelRouteRequest
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return nil, errUnmarshal
 	}
-	if _, ok := cfg.group(req.RequestedModel); !ok {
+	if _, ok := resolveTargetGroup(cfg, req.RequestedModel, ""); !ok {
 		return okEnvelope(modelRouteResponse{Handled: false})
 	}
 	return okEnvelope(modelRouteResponse{Handled: true, TargetKind: "self", Reason: "model group"})
+}
+
+// resolveTargetGroup finds the configured group for a requested model ID, or maps Claude Code's
+// hardcoded refusal-fallback model ("claude-opus-4-8") to the session's active group (or the
+// first configured group, excluding claude-* models since Claude just refused).
+func resolveTargetGroup(cfg pluginConfig, requestedModel, session string) (modelGroup, bool) {
+	if group, ok := cfg.group(requestedModel); ok {
+		return group, true
+	}
+	if !cfg.Features.FallbackOnRefusal || len(cfg.Groups) == 0 {
+		return modelGroup{}, false
+	}
+	lower := strings.ToLower(strings.TrimSpace(requestedModel))
+	if lower != "claude-opus-4-8" && lower != "claude-opus-4.8" {
+		return modelGroup{}, false
+	}
+	picked := cfg.Groups[0]
+	if session != "" {
+		stateMu.Lock()
+		for _, g := range cfg.Groups {
+			if _, ok := groupSessions[session+"\x00"+g.ID]; ok {
+				picked = g
+				break
+			}
+		}
+		stateMu.Unlock()
+	}
+	nonClaude := make([]string, 0, len(picked.Models))
+	for _, m := range picked.Models {
+		if !strings.HasPrefix(strings.ToLower(m), "claude-") {
+			nonClaude = append(nonClaude, m)
+		}
+	}
+	if len(nonClaude) > 0 {
+		picked.Models = nonClaude
+	}
+	return picked, true
 }
 
 // executeGroup tries the group's models in order and returns the first successful response.
@@ -138,12 +176,12 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
 		return nil, errUnmarshal
 	}
-	group, ok := cfg.group(req.Model)
+	session := groupSessionKey(req)
+	group, ok := resolveTargetGroup(cfg, req.Model, session)
 	if !ok {
 		return nil, fmt.Errorf("model group %s is not configured", req.Model)
 	}
 	now := time.Now()
-	session := groupSessionKey(req)
 	aux := isAuxiliaryRequest(req.Payload)
 	sanitizedPayload, sanitizedHeaders, _, _ := sanitizeRequest(req.Payload, req.Headers, cfg)
 	order, attempts, prevLookupModel := groupCandidateOrder(cfg, session, group, now)
@@ -189,7 +227,7 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 			notice := buildGroupNotice(cfg, group, attempts, model, prevModel)
 			bodyOut = injectNonStreamNotice(resp.Body, effectiveFormat(req.Format, req.SourceFormat), notice)
 		}
-		return okEnvelope(executorResponse{Payload: bodyOut, Headers: resp.Headers})
+		return okEnvelope(executorResponse{Payload: bodyOut, Headers: cleanResponseHeaders(resp.Headers)})
 	}
 	recordGroupDecision(group, session, attempts, "")
 	return nil, groupFailure(group, attempts, lastErr)
@@ -205,12 +243,12 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 	if req.StreamID == "" {
 		return nil, fmt.Errorf("executor.execute_stream request has no stream_id")
 	}
-	group, ok := cfg.group(req.Model)
+	session := groupSessionKey(req)
+	group, ok := resolveTargetGroup(cfg, req.Model, session)
 	if !ok {
 		return nil, fmt.Errorf("model group %s is not configured", req.Model)
 	}
 	now := time.Now()
-	session := groupSessionKey(req)
 	aux := isAuxiliaryRequest(req.Payload)
 	sanitizedPayload, sanitizedHeaders, _, hadSafeguards := sanitizeRequest(req.Payload, req.Headers, cfg)
 	stampSafeguards := cfg.Features.BypassAutoModeClassifier && hadSafeguards
@@ -257,7 +295,7 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 			prefetched, shiftIndices = injectStreamNotice(prefetched, effectiveFormat(req.Format, req.SourceFormat), notice)
 		}
 		go forwardStream(resp.StreamID, req.StreamID, req.HostCallbackID, prefetched, done, shiftIndices, stampSafeguards, cfg.Features.FallbackOnRefusal, session, group, model)
-		return okEnvelope(executorStreamOpenResponse{Headers: resp.Headers})
+		return okEnvelope(executorStreamOpenResponse{Headers: cleanResponseHeaders(resp.Headers)})
 	}
 	recordGroupDecision(group, session, attempts, "")
 	return nil, groupFailure(group, attempts, lastErr)

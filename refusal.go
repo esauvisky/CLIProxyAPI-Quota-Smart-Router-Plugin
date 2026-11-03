@@ -286,10 +286,17 @@ func groupSessionKey(req executorRequest) string {
 		}
 		if strings.HasPrefix(userID, "{") {
 			var parsed struct {
-				SessionID string `json:"session_id"`
+				SessionID       string `json:"session_id"`
+				ParentSessionID string `json:"parent_session_id"`
+				ParentAgentID   string `json:"parent_agent_id"`
+				ParentID        string `json:"parent_id"`
 			}
-			if json.Unmarshal([]byte(userID), &parsed) == nil && parsed.SessionID != "" {
-				return "claude:" + parsed.SessionID
+			if json.Unmarshal([]byte(userID), &parsed) == nil {
+				for _, candidate := range []string{parsed.ParentSessionID, parsed.ParentAgentID, parsed.ParentID, parsed.SessionID} {
+					if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+						return "claude:" + trimmed
+					}
+				}
 			}
 		} else if idx := strings.LastIndex(userID, "_session_"); idx != -1 {
 			if sid := strings.TrimSpace(userID[idx+len("_session_"):]); sid != "" {
@@ -1215,6 +1222,14 @@ func sanitizeRequest(payload []byte, headers http.Header, cfg pluginConfig) (bod
 		}
 	}
 
+	if headersOut != nil {
+		// Remove explicit client Accept-Encoding so Go's http.Transport manages upstream
+		// compression transparently and never returns compressed bytes or stale Content-Encoding
+		// headers that would corrupt injected SSE notice blocks (ZlibError in client fetch).
+		headersOut.Del("Accept-Encoding")
+	}
+	clearHeaders = append(clearHeaders, "Accept-Encoding")
+
 	if cfg.Features.StripRefusalTaintHeaders {
 		clearHeaders = append(clearHeaders, refusalTaintHeaders...)
 		for _, h := range refusalTaintHeaders {
@@ -1260,6 +1275,19 @@ func filterBetaTokens(tokens []string, f featureConfig) []string {
 		}
 		out = append(out, token)
 	}
+	return out
+}
+
+// cleanResponseHeaders removes hop-by-hop and encoding headers from an upstream executor response
+// because the plugin ABI and notice/safeguard injectors operate on decoded UTF-8 payloads.
+func cleanResponseHeaders(h http.Header) http.Header {
+	if h == nil {
+		return nil
+	}
+	out := h.Clone()
+	out.Del("Content-Encoding")
+	out.Del("Content-Length")
+	out.Del("Transfer-Encoding")
 	return out
 }
 
