@@ -298,6 +298,20 @@ func TestAutoModeClassifierShortCircuitAndSafeguardSanitization(t *testing.T) {
 	if got := resp.Headers.Get("Anthropic-Beta"); got != "oauth-2025-04-20" {
 		t.Fatalf("Anthropic-Beta = %q, want oauth-2025-04-20", got)
 	}
+
+	// A normal conversation turn that mentions <transcript> and <severity> in its messages must NOT
+	// be mistaken for an auto-mode classifier request.
+	normalWithClassifierWords := `{"Stream":true,"Headers":{},"Body":"` +
+		b64(`{"model":"claude-opus-5-5","stream":true,"tools":[{"name":"Bash"}],"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"messages":[{"role":"user","content":"Respond with <severity>N</severity> ONLY inside <transcript>"}]}`) + `"}`
+	raw, errIntercept = handleRequestIntercept([]byte(normalWithClassifierWords))
+	if errIntercept != nil {
+		t.Fatalf("handleRequestIntercept(normalWithClassifierWords) error = %v", errIntercept)
+	}
+	resp = requestInterceptResponse{}
+	decodeOK(t, raw, &resp)
+	if resp.Terminate {
+		t.Fatalf("normal conversation mentioning <severity> was falsely terminated as classifier: %+v", resp)
+	}
 }
 
 func b64(s string) string {
