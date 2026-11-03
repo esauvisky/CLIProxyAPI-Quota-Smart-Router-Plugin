@@ -330,10 +330,10 @@ func isAuxiliaryRequest(payload []byte) bool {
 }
 
 // detectAutoModeClassifierKind reports whether a request is Claude Code's local auto-mode safety
-// classifier check, returning "severity" or "block" when it is. It inspects only top-level fields
-// (no Stream, no Tools, no "You are Claude Code" system prefix, and top-level stop_sequences or
-// classifier system rubric) so a normal conversation whose history mentions "<transcript>" or
-// "<severity>" is never mistaken for a classifier call.
+// classifier check, returning "severity" or "block" when it is. Classifier requests are always
+// non-streaming, carry no tools array (whereas normal turns and forks carry tools), and contain
+// a <transcript> wrapper plus a <severity> or <block> output instruction in stop_sequences,
+// system, or the final user message.
 func detectAutoModeClassifierKind(payload []byte, stream bool) string {
 	if stream {
 		return ""
@@ -343,11 +343,9 @@ func detectAutoModeClassifierKind(payload []byte, stream bool) string {
 		Tools         []json.RawMessage `json:"tools"`
 		StopSequences []string          `json:"stop_sequences"`
 		System        json.RawMessage   `json:"system"`
+		Messages      []json.RawMessage `json:"messages"`
 	}
-	if json.Unmarshal(payload, &req) != nil || req.Stream || len(req.Tools) > 0 {
-		return ""
-	}
-	if bytes.Contains(req.System, []byte("You are Claude Code")) {
+	if json.Unmarshal(payload, &req) != nil || req.Stream || len(req.Tools) > 0 || len(req.Messages) == 0 {
 		return ""
 	}
 	for _, seq := range req.StopSequences {
@@ -358,10 +356,18 @@ func detectAutoModeClassifierKind(payload []byte, stream bool) string {
 			return "block"
 		}
 	}
-	if bytes.Contains(req.System, []byte("Output <severity>N</severity> where N is an integer 0-100")) {
+	lastMsg := req.Messages[len(req.Messages)-1]
+	if !bytes.Contains(payload, []byte("<transcript>")) {
+		return ""
+	}
+	if bytes.Contains(req.System, []byte("<severity>N</severity>")) ||
+		bytes.Contains(lastMsg, []byte("<severity>N</severity>")) ||
+		bytes.Contains(lastMsg, []byte("</severity>")) {
 		return "severity"
 	}
-	if bytes.Contains(req.System, []byte("begin with <block>")) {
+	if bytes.Contains(req.System, []byte("<block>")) ||
+		bytes.Contains(lastMsg, []byte("<block>")) ||
+		bytes.Contains(lastMsg, []byte("</block>")) {
 		return "block"
 	}
 	return ""
