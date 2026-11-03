@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -155,55 +156,29 @@ func isAuxiliaryRequest(payload []byte) bool {
 	return false
 }
 
-var textRefusalPhrases = []string{
-	"i can't help",
-	"i cannot help",
-	"i can't assist",
-	"i cannot assist",
-	"i won't help",
-	"i will not help",
-	"i won't assist",
-	"i will not assist",
-	"i'm unable to help",
-	"i am unable to help",
-	"i'm unable to assist",
-	"i am unable to assist",
-	"i'm not able to help",
-	"i am not able to help",
-	"i'm not able to assist",
-	"i am not able to assist",
-	"i can't provide",
-	"i cannot provide",
-	"i won't provide",
-	"i will not provide",
-	"i'm unable to provide",
-	"i am unable to provide",
-	"i can't fulfill",
-	"i cannot fulfill",
-	"i'm unable to fulfill",
-	"i am unable to fulfill",
-	"i can't comply",
-	"i cannot comply",
-	"i can't generate",
-	"i cannot generate",
-	"i can't create",
-	"i cannot create",
-	"i can't write",
-	"i cannot write",
-	"i can't support",
-	"i cannot support",
-	"i must refuse",
-	"i have to refuse",
-	"i must decline",
-	"i have to decline",
-}
+// textRefusalPattern matches the structural forms of plain-text LLM refusals:
+//  1. Direct refusal ("I can't/cannot/won't/am unable to help/assist/provide/generate/exploit/...")
+//  2. Explicit refusal/decline ("I must/have to refuse/decline")
+//  3. Scope-limiting refusal ("I can only help/assist/provide/discuss/explain...")
+//  4. Safe-completion pivot ("I can <safe thing>, but not / but I can't ...")
+//  5. Authorization/policy lecturing ("without ... permission/authorization", "authorized security/penetration/...", "safety policy/guidelines")
+var textRefusalPattern = regexp.MustCompile(
+	`(?i)\b(?:` +
+		`i\s+(?:can't|cannot|won't|will\s+not|must\s+not|am\s+(?:not\s+able|unable)|'m\s+(?:not\s+able|unable))\s+(?:to\s+)?(?:help|assist|provide|fulfill|comply|generate|create|write|support|supply|give|share|perform|execute|facilitate|aid|bypass|hack|exploit|attack|break|do\s+that|answer\s+that)` +
+		`|i\s+(?:must|have\s+to|need\s+to)\s+(?:refuse|decline)` +
+		`|i\s+can\s+only\s+(?:help|assist|provide|discuss|explain|share|cover|answer)` +
+		`|i\s+can\b[^.!\n]{0,200}\b(?:but\s+not|but\s+i\s+(?:can't|cannot|won't|will\s+not|am\s+unable|'m\s+unable))` +
+		`|without\s+(?:[\w-]+\s+){0,2}(?:permission|authorization|consent)` +
+		`|authorized\s+(?:security|penetration|testing|assessment|program|engagement)` +
+		`|(?:against|violates?)\s+(?:my|our|the)?\s*(?:safety|usage|content|acceptable\s+use)?\s*(?:policies|policy|guidelines|rules|principles|terms)` +
+		`|safety\s+(?:guidelines|policy|policies|reasons|filters)` +
+		`)\b`,
+)
 
 func detectTextRefusal(text string) string {
-	normalized := strings.ToLower(strings.NewReplacer("’", "'", "‘", "'").Replace(text))
-	for _, phrase := range textRefusalPhrases {
-		if strings.Contains(normalized, phrase) {
-			return "refusal (text)"
-		}
+	normalized := strings.NewReplacer("’", "'", "‘", "'").Replace(text)
+	if textRefusalPattern.MatchString(normalized) {
+		return "refusal (text)"
 	}
 	return ""
 }

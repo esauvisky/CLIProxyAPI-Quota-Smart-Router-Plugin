@@ -175,8 +175,8 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 					"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\"}}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-deepseek-v4.1-flash-uncensored":
-				// Simulate a plain-text refusal without "with" (e.g. "I can’t help make a bomb.").
-				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I can’t help make a bomb.\"}}\n\n"
+				// Simulate a GPT soft-pivot refusal ("I can help with ..., but not with ...").
+				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I can help with an authorized security assessment, but not with breaking into Niantic’s live site without clear permission and scope.\"}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-abliterated":
 				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the answer.\"}}\n\n"
