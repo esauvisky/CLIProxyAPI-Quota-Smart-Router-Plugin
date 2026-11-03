@@ -146,7 +146,7 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 	session := groupSessionKey(req)
 	aux := isAuxiliaryRequest(req.Payload)
 	sanitizedPayload, sanitizedHeaders, _, _ := sanitizeRequest(req.Payload, req.Headers, cfg)
-	order, attempts, prevLookupModel := groupCandidateOrder(session, group, now)
+	order, attempts, prevLookupModel := groupCandidateOrder(cfg, session, group, now)
 	var lastErr error
 	for _, model := range order {
 		reason, errSkip := skipReason(cfg, model, now)
@@ -214,7 +214,7 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 	aux := isAuxiliaryRequest(req.Payload)
 	sanitizedPayload, sanitizedHeaders, _, hadSafeguards := sanitizeRequest(req.Payload, req.Headers, cfg)
 	stampSafeguards := cfg.Features.BypassAutoModeClassifier && hadSafeguards
-	order, attempts, prevLookupModel := groupCandidateOrder(session, group, now)
+	order, attempts, prevLookupModel := groupCandidateOrder(cfg, session, group, now)
 	var lastErr error
 	for _, model := range order {
 		reason, errSkip := skipReason(cfg, model, now)

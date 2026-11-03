@@ -4,9 +4,9 @@
     {
       "id": "safeguard-killer",
       "name": "Safeguard Killer",
-      "description": "Strips model safeguards and refusal taint, auto-approves tool classifiers, and routes smart model groups with 5m cache stickiness and quota balancing.",
+      "description": "Neutralizes model safeguards, refusal taint, and auto-mode classifiers, and routes Smart Groups that automatically fail over around refusals with 5m cache stickiness and quota balancing.",
       "author": "esauvisky",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "repository": "https://github.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin",
       "homepage": "https://github.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin",
       "logo": "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin/main/assets/logo.png",

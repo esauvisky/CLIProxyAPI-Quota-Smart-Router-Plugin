@@ -51,14 +51,14 @@ func managementRegistrationPayload() managementRegistration {
 			{
 				Method:      http.MethodGet,
 				Path:        mgmtStateRoutePath,
-				Description: "Returns config, credentials, quota windows, session bindings and recent decisions of the Quota Smart Router.",
+				Description: "Returns config, safeguard adaptation toggles, smart groups, quota windows, session bindings, and recent routing decisions of Safeguard Killer.",
 			},
 		},
 		Resources: []managementResource{
 			{
 				Path:        uiResourcePath,
 				Menu:        "Safeguard Killer",
-				Description: "Strip safeguards, auto-approve tool classifiers, and route smart model groups with 5m cache stickiness and quota balancing.",
+				Description: "Strip model safeguards, bypass auto-mode classifiers, and route refusal-evasion Smart Groups with 5m cache stickiness and quota balancing.",
 			},
 		},
 	}
@@ -446,7 +446,7 @@ const uiHTML = `<!doctype html>
 <main class="main-content">
   <header class="page-header">
     <h1 class="page-title">Safeguard Killer</h1>
-    <p class="page-desc">Safeguard stripping, auto-mode classifier bypass, smart model groups with 5m cache stickiness, and quota-aware routing.</p>
+    <p class="page-desc">Neutralize model safeguards and auto-mode classifiers, route around refusals with Smart Groups (5m cache-sticky failover chains), and balance provider quota.</p>
   </header>
 
   <div class="status-bar">
@@ -497,7 +497,7 @@ const uiHTML = `<!doctype html>
 
     <section class="card">
       <div class="card-header"><h2 class="card-title">Safeguards &amp; Client Adaptations</h2></div>
-      <p class="card-desc">Control how Quota Smart Router handles model refusals, client notices, and hidden safety/classifier wire fields sent by Claude Code.</p>
+      <p class="card-desc">Control how Safeguard Killer strips hidden safety prompts, taint headers, and tool classifiers, and how it intercepts model refusals before they reach the client.</p>
       <div class="feature-grid" id="featuresForm">
         <label class="feature-item">
           <input type="checkbox" data-feature="fallback_on_refusal">
@@ -570,7 +570,7 @@ const uiHTML = `<!doctype html>
         <h2 class="card-title">Smart Groups</h2>
         <button class="btn sm" data-action="add-group" id="addGroupBtn">Add group</button>
       </div>
-      <p class="card-desc">A group is a virtual model clients request by its codename. It tries its models top to bottom, pins to the working model while the 5-minute prompt cache is warm, and retries from the top once 5 minutes pass.</p>
+      <p class="card-desc">A Smart Group exposes a single virtual model ID that automatically routes around safeguard refusals, content filters, scope-gate lectures, and quota exhaustion across multiple models. Once a model answers without refusing, the session stays pinned to it for 5 minutes while the server prompt cache is warm, then resets to try the group from the start once 5 minutes pass (can also be used purely for multi-provider convenience or quota spreading).</p>
       <div class="groups" id="groupsEditor"></div>
       <datalist id="modelList"></datalist>
     </section>
@@ -814,11 +814,15 @@ function featuresOf(cfg) {
   return out;
 }
 
+function normStrategy(s) {
+  return s === 'random' || s === 'quota' ? s : 'order';
+}
+
 function canonConfig(cfg) {
   return JSON.stringify({
     min_remaining: cfg.min_remaining,
     idle_minutes: cfg.idle_minutes,
-    groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, models: g.models })),
+    groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, strategy: normStrategy(g.strategy), models: g.models })),
     features: featuresOf(cfg),
   });
 }
@@ -835,7 +839,7 @@ function loadDraft(cfg) {
       key: '',
     },
     features: featuresOf(cfg),
-    groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, models: g.models.slice(), pending: '' })),
+    groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, strategy: normStrategy(g.strategy), models: g.models.slice(), pending: '' })),
   };
   draftSourceCanon = canonConfig(cfg);
   for (const el of document.querySelectorAll('[data-setting]')) el.value = draft.settings[el.dataset.setting];
@@ -873,7 +877,7 @@ function validateDraft() {
   const idle = parseNum(s.idle_minutes);
   if (!Number.isInteger(idle) || idle <= 0) errors.push(['idle_minutes', 'Idle minutes must be a positive whole number, got "' + s.idle_minutes + '"']);
 
-  const groups = draft.groups.map(g => ({ id: g.id.trim(), name: g.name.trim(), models: g.models.map(m => m.trim()) }));
+  const groups = draft.groups.map(g => ({ id: g.id.trim(), name: g.name.trim(), strategy: normStrategy(g.strategy), models: g.models.map(m => m.trim()) }));
   const ids = new Set();
   groups.forEach((g, i) => {
     const label = 'Group #' + (i + 1) + (g.id ? ' (' + g.id + ')' : '');
@@ -956,8 +960,10 @@ async function saveValidated(cfg) {
   let node;
   let etag = null;
   if (getResp.status === 404) {
-    // No plugin config node yet; the PUT creates it.
+    // No plugin config node yet; fetch the parent map ETag so the PUT creates it.
     node = {};
+    const parentResp = await fetch('/v8/management/config/plugins/configs', { method: 'GET', headers: authHeaders(), cache: 'no-store' });
+    if (parentResp.ok) etag = parentResp.headers.get('ETag');
   } else if (!getResp.ok) {
     if (getResp.status === 401 || getResp.status === 403) document.getElementById('mgmtKey').style.display = 'inline-block';
     showSaveBanner('error', 'Not saved: HTTP ' + getResp.status + ' reading ' + CONFIG_API_URL, getText);
@@ -967,6 +973,7 @@ async function saveValidated(cfg) {
     if (!isPlainObject(node)) throw new Error('config node at ' + CONFIG_API_URL + ' is not an object: ' + truncate(getText, 500));
     etag = getResp.headers.get('ETag');
   }
+  if (etag !== null) etag = etag.replace(/^W\//, '');
 
   const merged = Object.assign({}, node);
   merged.min_remaining = cfg.min_remaining;
@@ -1022,15 +1029,22 @@ function groupFieldAttr(i, rest) {
   return ' data-field="groups.' + i + '.' + rest + '"';
 }
 
+const STRATEGY_HINTS = {
+  order: 'In order: tries models top to bottom and only advances when a model refuses, errors, or runs out of quota. Pins to the first model that answers for 5m (warm cache), then retries from #1 after 5m.',
+  quota: 'Quota spread: picks a starting model weighted-randomly by each provider\'s available quota rate (remaining / hours to reset) to spread token spend efficiently, falls through on refusal, and pins to the answering model for 5m.',
+  random: 'Random: picks a starting model uniformly at random for new or cache-expired (5m+) sessions, falls through on refusal, and pins to the answering model for 5m.',
+};
+
 function renderGroups() {
   const root = document.getElementById('groupsEditor');
   document.getElementById('groupCount').textContent = String(draft.groups.length);
   document.getElementById('tabGroupCount').textContent = String(draft.groups.length);
   if (draft.groups.length === 0) {
-    root.innerHTML = '<div class="empty">No model groups. Add one to expose a virtual model that falls back across models.</div>';
+    root.innerHTML = '<div class="empty">No smart groups configured. Add one to expose a virtual model that automatically routes around safeguard refusals across models.</div>';
     return;
   }
   root.innerHTML = draft.groups.map((g, i) => {
+    const strat = normStrategy(g.strategy);
     const models = g.models.map((m, j) =>
       '<li class="model-row">' +
         '<span class="model-idx mono">' + (j + 1) + '.</span>' +
@@ -1046,9 +1060,15 @@ function renderGroups() {
           '<input class="input mono" value="' + esc(g.id) + '" data-group="' + i + '" data-gfield="id"' + groupFieldAttr(i, 'id') + '></label>' +
         '<label class="field"><span class="cfg-key">Visible name</span>' +
           '<input class="input" value="' + esc(g.name) + '" data-group="' + i + '" data-gfield="name"' + groupFieldAttr(i, 'name') + '></label>' +
+        '<label class="field"><span class="cfg-key">Routing strategy</span>' +
+          '<select class="input" data-group="' + i + '" data-gfield="strategy"' + groupFieldAttr(i, 'strategy') + '>' +
+            '<option value="order"' + (strat === 'order' ? ' selected' : '') + '>In Order (Fallback Only, 5m Sticky)</option>' +
+            '<option value="quota"' + (strat === 'quota' ? ' selected' : '') + '>Quota Spread (Weighted Random, 5m Sticky)</option>' +
+            '<option value="random"' + (strat === 'random' ? ' selected' : '') + '>Random (Uniform Random, 5m Sticky)</option>' +
+          '</select></label>' +
         '<button class="btn sm danger" data-action="group-remove" data-group="' + i + '">Delete group</button>' +
       '</div>' +
-      '<div class="hint" style="margin-top:6px">Tries models top to bottom; moves on when a model fails before output or all its credentials are low on quota.</div>' +
+      '<div class="hint" style="margin-top:6px" data-group-hint="' + i + '">' + esc(STRATEGY_HINTS[strat]) + '</div>' +
       '<ol class="model-list">' + models + '</ol>' +
       '<div class="add-row">' +
         '<input class="input grow mono" list="modelList" placeholder="Add model (pick or type)" value="' + esc(g.pending) + '" data-group="' + i + '" data-gfield="pending"' + groupFieldAttr(i, 'add') + '>' +
@@ -1078,7 +1098,7 @@ function onEditorClick(ev) {
   if (btn === null) return;
   const action = btn.dataset.action;
   if (action === 'add-group') {
-    draft.groups.push({ id: '', name: '', models: [], pending: '' });
+    draft.groups.push({ id: '', name: '', strategy: 'order', models: [], pending: '' });
   } else {
     const gi = Number(btn.dataset.group);
     const g = draft.groups[gi];
@@ -1106,6 +1126,10 @@ function onEditorInput(ev) {
     g.pending = el.value;
   } else {
     g[el.dataset.gfield] = el.value;
+    if (el.dataset.gfield === 'strategy') {
+      const hint = document.querySelector('[data-group-hint="' + el.dataset.group + '"]');
+      if (hint !== null) hint.textContent = STRATEGY_HINTS[normStrategy(el.value)];
+    }
     setDirty(true);
   }
 }

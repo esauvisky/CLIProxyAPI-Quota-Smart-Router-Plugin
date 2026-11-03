@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,41 +59,145 @@ var groupSessions = make(map[string]*sessionBinding)
 
 // groupCandidateOrder returns the model order to try for a group request, any initial sticky-skip
 // attempt records, and the model that served the previous turn in this session (if any).
-func groupCandidateOrder(session string, group modelGroup, now time.Time) (order []string, skipped []groupAttempt, prevModel string) {
-	if session == "" || len(group.Models) == 0 {
-		return group.Models, nil, ""
+func groupCandidateOrder(cfg pluginConfig, session string, group modelGroup, now time.Time) (order []string, skipped []groupAttempt, prevModel string) {
+	if len(group.Models) == 0 {
+		return nil, nil, ""
 	}
-	key := session + "\x00" + group.ID
-	stateMu.Lock()
-	binding, ok := groupSessions[key]
-	if ok {
-		prevModel = binding.AuthID
-		if !now.Before(binding.IdleExpiresAt) {
-			delete(groupSessions, key)
-			ok = false
+	warm := false
+	if session != "" {
+		key := session + "\x00" + group.ID
+		stateMu.Lock()
+		if binding, ok := groupSessions[key]; ok {
+			prevModel = binding.AuthID
+			if now.Before(binding.IdleExpiresAt) {
+				warm = true
+			} else {
+				delete(groupSessions, key)
+			}
+		}
+		stateMu.Unlock()
+	}
+
+	strategy := group.effectiveStrategy()
+	if warm {
+		startIdx := -1
+		for i, m := range group.Models {
+			if m == prevModel {
+				startIdx = i
+				break
+			}
+		}
+		if startIdx >= 0 {
+			if strategy == groupStrategyOrder {
+				for _, m := range group.Models[:startIdx] {
+					skipped = append(skipped, groupAttempt{Model: m, Result: "skipped: sticky to " + prevModel + " (cache warm)"})
+				}
+				order = make([]string, 0, len(group.Models))
+				order = append(order, group.Models[startIdx:]...)
+				order = append(order, group.Models[:startIdx]...)
+				return order, skipped, prevModel
+			}
+			rest := make([]string, 0, len(group.Models)-1)
+			for i, m := range group.Models {
+				if i != startIdx {
+					rest = append(rest, m)
+				}
+			}
+			orderedRest := orderByStrategy(cfg, rest, strategy, now)
+			order = make([]string, 0, len(group.Models))
+			order = append(order, prevModel)
+			order = append(order, orderedRest...)
+			return order, nil, prevModel
 		}
 	}
-	stateMu.Unlock()
-	if !ok {
-		return group.Models, nil, prevModel
+
+	return orderByStrategy(cfg, group.Models, strategy, now), nil, prevModel
+}
+
+func orderByStrategy(cfg pluginConfig, models []string, strategy string, now time.Time) []string {
+	if len(models) <= 1 {
+		return append([]string(nil), models...)
 	}
-	startIdx := -1
-	for i, m := range group.Models {
-		if m == prevModel {
-			startIdx = i
-			break
+	switch strategy {
+	case groupStrategyRandom:
+		out := append([]string(nil), models...)
+		rand.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
+		return out
+	case groupStrategyQuota:
+		return orderByQuotaWeightedRandom(cfg, models, now)
+	default:
+		return append([]string(nil), models...)
+	}
+}
+
+// orderByQuotaWeightedRandom orders models using Efraimidis-Spirakis weighted random sampling
+// without replacement, weighted by each model's best eligible credential rate (remaining /
+// hours_to_reset), so usage spreads across providers proportional to available quota per hour.
+func orderByQuotaWeightedRandom(cfg pluginConfig, models []string, now time.Time) []string {
+	weights := make([]float64, len(models))
+	var positiveRates []float64
+	snapshot, errHost := hostState(now)
+	if errHost == nil && cfg.ManagementKey != "" {
+		ensureQuotaFresh(cfg.ManagementKey, snapshot.auths)
+		for i, model := range models {
+			bestRate := 0.0
+			sawCred := false
+			allExhausted := true
+			for _, auth := range snapshot.auths {
+				if auth.Disabled || !containsString(snapshot.models[auth.ID], model) {
+					continue
+				}
+				sawCred = true
+				entry := rankEntry{AuthID: auth.ID, Provider: auth.Provider}
+				rateCredential(&entry, model, cfg.MinRemaining, now)
+				if entry.Excluded == "" && entry.Rate > bestRate {
+					bestRate = entry.Rate
+					allExhausted = false
+				} else if !strings.Contains(entry.Excluded, "% left") {
+					allExhausted = false
+				}
+			}
+			if bestRate > 0 {
+				weights[i] = bestRate
+				positiveRates = append(positiveRates, bestRate)
+			} else if sawCred && allExhausted {
+				weights[i] = 1e-9
+			}
 		}
 	}
-	if startIdx <= 0 {
-		return group.Models, nil, prevModel
+	fallbackWeight := 1.0
+	if len(positiveRates) > 0 {
+		sum := 0.0
+		for _, r := range positiveRates {
+			sum += r
+		}
+		fallbackWeight = sum / float64(len(positiveRates))
 	}
-	for _, m := range group.Models[:startIdx] {
-		skipped = append(skipped, groupAttempt{Model: m, Result: "skipped: sticky to " + prevModel + " (cache warm)"})
+	type scoredModel struct {
+		model string
+		score float64
 	}
-	order = make([]string, 0, len(group.Models))
-	order = append(order, group.Models[startIdx:]...)
-	order = append(order, group.Models[:startIdx]...)
-	return order, skipped, prevModel
+	scored := make([]scoredModel, len(models))
+	for i, m := range models {
+		w := weights[i]
+		if w <= 0 {
+			w = fallbackWeight
+		}
+		u := rand.Float64()
+		if u <= 1e-12 {
+			u = 1e-12
+		}
+		// Efraimidis-Spirakis key u^(1/w); higher key (log(u)/w closer to 0) wins.
+		scored[i] = scoredModel{model: m, score: math.Log(u) / w}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+	out := make([]string, len(models))
+	for i, s := range scored {
+		out[i] = s.model
+	}
+	return out
 }
 
 // bindGroupSession records the model that served a group request and returns the model that had
@@ -698,7 +805,7 @@ func buildGroupNotice(cfg pluginConfig, group modelGroup, attempts []groupAttemp
 		}
 	}
 	modelChanged := (prevModel != "" && prevModel != served) ||
-		(prevModel == "" && len(group.Models) > 0 && served != group.Models[0])
+		(prevModel == "" && group.effectiveStrategy() == groupStrategyOrder && len(group.Models) > 0 && served != group.Models[0])
 	if !hadActiveFailure && !modelChanged {
 		return ""
 	}
@@ -942,7 +1049,7 @@ func hasNoticePrefix(text string, prefixes []string) bool {
 	return false
 }
 
-// cleanMessages removes previously injected Quota Smart Router notice blocks and optionally
+// cleanMessages removes previously injected Safeguard Killer notice blocks and optionally
 // strips restrictive mid-conversation <system-reminder> or role="system" refusal turns.
 func cleanMessages(rawMessages json.RawMessage, cfg pluginConfig) json.RawMessage {
 	prefixes := activeNoticePrefixes(cfg)

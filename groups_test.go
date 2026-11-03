@@ -314,6 +314,32 @@ func TestAutoModeClassifierShortCircuitAndSafeguardSanitization(t *testing.T) {
 	}
 }
 
+func TestGroupRoutingStrategiesRandomAndQuotaSticky(t *testing.T) {
+	resetHostState(t)
+	cfg := balanceConfig()
+	group := modelGroup{
+		ID:       "spread",
+		Name:     "Spread",
+		Strategy: groupStrategyQuota,
+		Models:   []string{"m1", "m2", "m3"},
+	}
+	now := time.Now()
+	order1, skipped1, prev1 := groupCandidateOrder(cfg, "sess-q", group, now)
+	if len(order1) != 3 || len(skipped1) != 0 || prev1 != "" {
+		t.Fatalf("initial quota order = %v skipped=%v prev=%q", order1, skipped1, prev1)
+	}
+	chosen := order1[0]
+	bindGroupSession("sess-q", group.ID, chosen, prev1, now)
+
+	// Within 5 minutes, the chosen model is always placed first to preserve prompt cache.
+	for i := 0; i < 10; i++ {
+		order2, _, prev2 := groupCandidateOrder(cfg, "sess-q", group, now.Add(2*time.Minute))
+		if order2[0] != chosen || prev2 != chosen {
+			t.Fatalf("sticky quota order[0] = %q (prev %q), want %q", order2[0], prev2, chosen)
+		}
+	}
+}
+
 func b64(s string) string {
 	raw, _ := json.Marshal([]byte(s))
 	return strings.Trim(string(raw), `"`)

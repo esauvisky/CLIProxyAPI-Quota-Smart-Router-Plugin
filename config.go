@@ -3,13 +3,20 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"gopkg.in/yaml.v3"
 )
 
-// groupProvider is the executor identifier model groups are registered and executed under.
-const groupProvider = "model-groups"
+const (
+	// groupProvider is the executor identifier model groups are registered and executed under.
+	groupProvider = "model-groups"
+
+	groupStrategyOrder  = "order"
+	groupStrategyRandom = "random"
+	groupStrategyQuota  = "quota"
+)
 
 // executorFormats lists every client protocol; group requests pass through in the client's own format.
 var executorFormats = []string{"openai", "openai-response", "claude", "gemini", "codex", "antigravity", "interactions"}
@@ -86,13 +93,28 @@ func (f featureConfig) effectiveNoticePrefix() string {
 	return defaultNoticePrefix
 }
 
-// modelGroup is a virtual model that tries its target models in order until one succeeds.
+// modelGroup is a virtual model that routes across its target models according to Strategy.
 type modelGroup struct {
 	// ID is the model codename clients request.
 	ID string `yaml:"id" json:"id"`
 	// Name is the display name shown in model lists.
-	Name   string   `yaml:"name" json:"name"`
-	Models []string `yaml:"models" json:"models"`
+	Name string `yaml:"name" json:"name"`
+	// Strategy is "order" (default), "random", or "quota".
+	Strategy string   `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	Models   []string `yaml:"models" json:"models"`
+}
+
+func (g modelGroup) effectiveStrategy() string {
+	switch strings.ToLower(strings.TrimSpace(g.Strategy)) {
+	case "", groupStrategyOrder, "fallback", "priority":
+		return groupStrategyOrder
+	case groupStrategyRandom:
+		return groupStrategyRandom
+	case groupStrategyQuota:
+		return groupStrategyQuota
+	default:
+		return strings.ToLower(strings.TrimSpace(g.Strategy))
+	}
 }
 
 var activeConfig atomic.Value
@@ -168,6 +190,11 @@ func validateConfig(cfg pluginConfig) error {
 		if len(group.Models) == 0 {
 			return fmt.Errorf("group %s needs at least one model", group.ID)
 		}
+		switch group.effectiveStrategy() {
+		case groupStrategyOrder, groupStrategyRandom, groupStrategyQuota:
+		default:
+			return fmt.Errorf("group %s has unknown strategy %q (want order, random, or quota)", group.ID, group.Strategy)
+		}
 	}
 	for _, group := range cfg.Groups {
 		for _, model := range group.Models {
@@ -200,8 +227,8 @@ func pluginRegistration() registration {
 			ConfigFields: []configField{
 				{Name: "management_key", Type: "string", Description: "CPA management key used to read provider quota."},
 				{Name: "min_remaining", Type: "number", Default: 0.02, Description: "Quota fraction (0-1) every window of a credential must keep for it to be used."},
-				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a session may move to another credential."},
-				{Name: "groups", Type: "array", Description: "Model groups ({id, name, models}): a virtual model that tries its models in order until one succeeds."},
+				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a credential session binding may re-rank."},
+				{Name: "groups", Type: "array", Description: "Smart Groups ({id, name, strategy, models}): virtual models that automatically route around safeguard refusals, errors, and low quota with 5m cache stickiness."},
 				{Name: "features", Type: "object", Description: "Safeguard and client-wire adaptation toggles and custom notice_prefix."},
 			},
 		},
