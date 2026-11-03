@@ -315,7 +315,7 @@ func TestAutoModeClassifierShortCircuitAndSafeguardSanitization(t *testing.T) {
 }
 
 func TestGroupRoutingStrategiesRandomAndQuotaSticky(t *testing.T) {
-	resetHostState(t)
+	fakeHost(t, []string{"m1", "m2", "m3"}, noOther(t), "c1")
 	cfg := balanceConfig()
 	group := modelGroup{
 		ID:       "spread",
