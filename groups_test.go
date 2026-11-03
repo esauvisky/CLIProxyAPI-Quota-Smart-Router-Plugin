@@ -175,8 +175,8 @@ func TestExecuteGroupStreamFallsThroughSafeguardRefusalAndRemembersSession(t *te
 					"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\"}}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-deepseek-v4.1-flash-uncensored":
-				// Simulate an authorization-context gate / interrogation refusal.
-				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I can help with this, but I need to know the context first. Stealthing Frida against RASP is a detection-evasion request, and I need a clear authorization context before I work on it.\"}}\n\n"
+				// Simulate a mid-word Gemini filter block ("I cannotThis request was blocked by Gemini's filters...").
+				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"I cannotThis request was blocked by Gemini's filters. They can occasionally trigger by mistake on safe coding, security, or biology-related queries. Please try rephrasing your prompt.\"}}\n\n"
 				return json.Marshal(hostStreamReadResponse{Payload: []byte(chunk), Done: true})
 			case "src-abliterated":
 				chunk := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the answer.\"}}\n\n"

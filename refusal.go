@@ -388,18 +388,22 @@ func detectAutoModeClassifierKind(payload []byte, stream bool) string {
 //  5. Authorization interrogation ("need/require ... authorization/permission/context first", "authorization context")
 //  6. Authorization/policy lecturing ("without ... permission/authorization", "authorized security/pentest/...", "safety policy/guidelines")
 var textRefusalPattern = regexp.MustCompile(
-	`(?i)\b(?:` +
-		`i\s+(?:can't|cannot|won't|will\s+not|must\s+not|am\s+(?:not\s+able|unable)|'m\s+(?:not\s+able|unable))\s+(?:to\s+)?(?:help|assist|provide|fulfill|comply|generate|create|write|support|supply|give|share|perform|execute|facilitate|aid|bypass|hack|exploit|attack|break|do\s+that|answer\s+that)` +
-		`|i\s+(?:must|have\s+to|need\s+to)\s+(?:refuse|decline)` +
-		`|i\s+can\s+only\s+(?:help|assist|provide|discuss|explain|share|cover|answer)` +
-		`|i\s+can\b[^.!\n]{0,200}\b(?:but\s+not|but\s+i\s+(?:can't|cannot|won't|will\s+not|am\s+unable|'m\s+unable|need\b|must\b|have\s+to\b))` +
-		`|(?:i\s+(?:need|require|must\s+have)|requires?)\b[^.!\n]{0,120}\b(?:authorization|permission|context\s+first|clear\s+context|engagement\s+scope)` +
-		`|(?:authorization|permission)\s+(?:context|scope)` +
-		`|without\s+(?:[\w-]+\s+){0,2}(?:permission|authorization|consent)` +
-		`|authorized\s+(?:security|penetration|pentest\w*|testing|assessment|program|engagement)` +
-		`|(?:against|violates?)\s+(?:my|our|the)?\s*(?:safety|usage|content|acceptable\s+use)?\s*(?:policies|policy|guidelines|rules|principles|terms)` +
-		`|safety\s+(?:guidelines|policy|policies|reasons|filters)` +
-		`)\b`,
+	`(?i)(?:` +
+		`\bi\s+(?:can't|cannot|won't|will\s+not|must\s+not|am\s+(?:not\s+able|unable)|'m\s+(?:not\s+able|unable))\s+(?:to\s+)?(?:help|assist|provide|fulfill|comply|generate|create|write|support|supply|give|share|perform|execute|facilitate|aid|bypass|hack|exploit|attack|break|do\s+that|answer\s+that)\b` +
+		`|^\s*i\s+(?:can't|cannot|won't|will\s+not)(?:\b|[A-Z])` +
+		`|\bi\s+(?:must|have\s+to|need\s+to)\s+(?:refuse|decline)\b` +
+		`|\bi\s+can\s+only\s+(?:help|assist|provide|discuss|explain|share|cover|answer)\b` +
+		`|\bi\s+can\b[^.!\n]{0,200}\b(?:but\s+not|but\s+i\s+(?:can't|cannot|won't|will\s+not|am\s+unable|'m\s+unable|need\b|must\b|have\s+to\b))` +
+		`|\b(?:i\s+(?:need|require|must\s+have)|requires?)\b[^.!\n]{0,120}\b(?:authorization|permission|context\s+first|clear\s+context|engagement\s+scope)\b` +
+		`|\b(?:authorization|permission)\s+(?:context|scope)\b` +
+		`|\bwithout\s+(?:[\w-]+\s+){0,2}(?:permission|authorization|consent)\b` +
+		`|\bauthorized\s+(?:security|penetration|pentest\w*|testing|assessment|program|engagement)\b` +
+		`|\b(?:against|violates?)\s+(?:my|our|the)?\s*(?:safety|usage|content|acceptable\s+use)?\s*(?:policies|policy|guidelines|rules|principles|terms)\b` +
+		`|\bsafety\s+(?:guidelines|policy|policies|reasons|filters)\b` +
+		`|(?:request|response|message|prompt|query)\s+(?:was\s+|has\s+been\s+)?(?:blocked|filtered|flagged|refused)\b` +
+		`|\bblocked\s+by\s+[\w'’.-]+\s*(?:filters?|safeguards?|safety|policies|policy)\b` +
+		`|\btry\s+rephrasing\s+your\s+(?:prompt|request|question|query)\b` +
+		`)`,
 )
 
 func detectTextRefusal(text string) string {
