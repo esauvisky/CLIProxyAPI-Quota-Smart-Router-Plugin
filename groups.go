@@ -230,6 +230,11 @@ func executeGroup(raw []byte, cfg pluginConfig) ([]byte, error) {
 		return okEnvelope(executorResponse{Payload: bodyOut, Headers: cleanResponseHeaders(resp.Headers)})
 	}
 	recordGroupDecision(group, session, attempts, "")
+	if !aux && cfg.Features.ClientFallbackNotices && hasRefusalAttempt(attempts) {
+		notice := buildGroupExhaustedNotice(cfg, group, attempts)
+		bodyOut := buildExhaustedNonStreamBody(effectiveFormat(req.Format, req.SourceFormat), group.ID, notice)
+		return okEnvelope(executorResponse{Payload: bodyOut, Headers: http.Header{"Content-Type": []string{"application/json"}}})
+	}
 	return nil, groupFailure(group, attempts, lastErr)
 }
 
@@ -298,6 +303,11 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		return okEnvelope(executorStreamOpenResponse{Headers: cleanResponseHeaders(resp.Headers)})
 	}
 	recordGroupDecision(group, session, attempts, "")
+	if !aux && cfg.Features.ClientFallbackNotices && len(attempts) > 0 {
+		notice := buildGroupExhaustedNotice(cfg, group, attempts)
+		go emitExhaustedNoticeStream(req.StreamID, req.HostCallbackID, effectiveFormat(req.Format, req.SourceFormat), group.ID, notice)
+		return okEnvelope(executorStreamOpenResponse{Headers: http.Header{"Content-Type": []string{"text/event-stream; charset=utf-8"}}})
+	}
 	return nil, groupFailure(group, attempts, lastErr)
 }
 
