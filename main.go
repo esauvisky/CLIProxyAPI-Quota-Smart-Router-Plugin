@@ -63,7 +63,7 @@ const (
 	schemaVersion uint32 = 9
 
 	pluginName    = "Safeguard Killer"
-	pluginVersion = "0.5.8"
+	pluginVersion = "0.5.9"
 	pluginAuthor  = "esauvisky"
 	pluginRepo    = "https://github.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin"
 	pluginLogo    = "https://raw.githubusercontent.com/esauvisky/CLIProxyAPI-Safeguard-Killer-Plugin/main/assets/logo.png"
@@ -84,6 +84,8 @@ const (
 	methodExecutorHTTP       = "executor.http_request"
 	methodRequestBefore      = "request.intercept_before"
 	methodRequestAfter       = "request.intercept_after"
+	methodStreamIntercept    = "response.intercept_stream_chunk"
+	methodRequestComplete    = "request.complete"
 )
 
 type envelope struct {
@@ -199,6 +201,10 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return nil, &statusError{Code: "not_supported", Message: method + " is not supported for model groups", HTTPStatus: 501}
 	case methodRequestBefore, methodRequestAfter:
 		return handleRequestIntercept(request)
+	case methodStreamIntercept:
+		return handleStreamIntercept(request)
+	case methodRequestComplete:
+		return handleStreamCompletion(request)
 	case methodManagementRegister:
 		return okEnvelope(managementRegistrationPayload())
 	case methodManagementHandle:

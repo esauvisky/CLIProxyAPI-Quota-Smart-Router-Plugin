@@ -58,6 +58,8 @@ type registrationCapabilities struct {
 	ExecutorInputFormats  []string `json:"executor_input_formats"`
 	ExecutorOutputFormats []string `json:"executor_output_formats"`
 	RequestInterceptor    bool     `json:"request_interceptor"`
+	StreamInterceptor     bool     `json:"response_stream_interceptor"`
+	RequestLifecycle      bool     `json:"request_lifecycle_plugin"`
 }
 
 type pluginConfig struct {
@@ -73,6 +75,7 @@ type pluginConfig struct {
 		Key string `yaml:"key" json:"key"`
 	} `yaml:"management,omitempty" json:"-"`
 }
+
 // featureConfig controls safeguard and client-wire adaptations.
 type featureConfig struct {
 	FallbackOnRefusal             bool   `yaml:"fallback_on_refusal" json:"fallback_on_refusal"`
@@ -242,6 +245,8 @@ func pluginRegistration() registration {
 			ExecutorInputFormats:  executorFormats,
 			ExecutorOutputFormats: executorFormats,
 			RequestInterceptor:    true,
+			StreamInterceptor:     true,
+			RequestLifecycle:      true,
 		},
 	}
 }
