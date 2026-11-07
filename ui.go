@@ -492,6 +492,9 @@ const uiHTML = `<!doctype html>
         <label class="field"><span class="cfg-key">Idle minutes</span>
           <input class="input" type="number" step="1" min="0" data-field="idle_minutes" data-setting="idle_minutes">
           <span class="hint">A session without prompts for this long may move to another credential or group model (0 disables stickiness).</span></label>
+        <label class="field"><span class="cfg-key">Stream prefetch bytes</span>
+          <input class="input" type="number" step="1" min="1" data-field="stream_prefetch_bytes" data-setting="stream_prefetch_bytes">
+          <span class="hint">Bytes of visible text a group stream holds back and checks for refusals before forwarding to the client.</span></label>
       </div>
     </section>
 
@@ -822,6 +825,7 @@ function canonConfig(cfg) {
   return JSON.stringify({
     min_remaining: cfg.min_remaining,
     idle_minutes: cfg.idle_minutes,
+    stream_prefetch_bytes: cfg.stream_prefetch_bytes,
     groups: groupsOf(cfg).map(g => ({ id: g.id, name: g.name, strategy: normStrategy(g.strategy), models: g.models })),
     features: featuresOf(cfg),
   });
@@ -836,6 +840,7 @@ function loadDraft(cfg) {
     settings: {
       min_remaining_pct: fracToPct(cfg.min_remaining),
       idle_minutes: String(cfg.idle_minutes),
+      stream_prefetch_bytes: String(cfg.stream_prefetch_bytes),
       key: '',
     },
     features: featuresOf(cfg),
@@ -876,6 +881,8 @@ function validateDraft() {
   if (!Number.isFinite(minPct) || minFrac < 0 || minFrac >= 1) errors.push(['min_remaining', 'Min remaining must be a percentage in [0, 100), got "' + s.min_remaining_pct + '"']);
   const idle = parseNum(s.idle_minutes);
   if (!Number.isInteger(idle) || idle < 0) errors.push(['idle_minutes', 'Idle minutes must be a non-negative whole number, got "' + s.idle_minutes + '"']);
+  const prefetch = parseNum(s.stream_prefetch_bytes);
+  if (!Number.isInteger(prefetch) || prefetch < 1) errors.push(['stream_prefetch_bytes', 'Stream prefetch bytes must be a whole number of at least 1, got "' + s.stream_prefetch_bytes + '"']);
 
   const groups = draft.groups.map(g => ({ id: g.id.trim(), name: g.name.trim(), strategy: normStrategy(g.strategy), models: g.models.map(m => m.trim()) }));
   const ids = new Set();
@@ -905,6 +912,7 @@ function validateDraft() {
     cfg: {
       min_remaining: minFrac,
       idle_minutes: idle,
+      stream_prefetch_bytes: prefetch,
       groups: groups,
       features: features,
     },
@@ -978,6 +986,7 @@ async function saveValidated(cfg) {
   const merged = Object.assign({}, node);
   merged.min_remaining = cfg.min_remaining;
   merged.idle_minutes = cfg.idle_minutes;
+  merged.stream_prefetch_bytes = cfg.stream_prefetch_bytes;
   if (draft.settings.key.trim() !== '') merged.management_key = draft.settings.key.trim();
   else if (!merged.management_key && isPlainObject(merged.management) && typeof merged.management.key === 'string' && merged.management.key !== '') {
     merged.management_key = merged.management.key;

@@ -66,10 +66,14 @@ type pluginConfig struct {
 	// MinRemaining is the fraction every applicable quota window must keep for a credential to be used.
 	MinRemaining float64 `yaml:"min_remaining" json:"min_remaining"`
 	// IdleMinutes is how long a session may go without a prompt before it can move to another credential.
-	IdleMinutes   int           `yaml:"idle_minutes" json:"idle_minutes"`
-	ManagementKey string        `yaml:"management_key" json:"-"`
-	Groups        []modelGroup  `yaml:"groups" json:"groups"`
-	Features      featureConfig `yaml:"features" json:"features"`
+	IdleMinutes int `yaml:"idle_minutes" json:"idle_minutes"`
+	// StreamPrefetchBytes is how many bytes of visible text executeGroupStream buffers before
+	// committing to a candidate model, so prompt-level, thinking-phase, and streaming safeguard or
+	// text refusals can switch to the next model in the group before any chunk is sent.
+	StreamPrefetchBytes int           `yaml:"stream_prefetch_bytes" json:"stream_prefetch_bytes"`
+	ManagementKey       string        `yaml:"management_key" json:"-"`
+	Groups              []modelGroup  `yaml:"groups" json:"groups"`
+	Features            featureConfig `yaml:"features" json:"features"`
 	// LegacyManagement reads existing management.key configs on upgrade.
 	LegacyManagement struct {
 		Key string `yaml:"key" json:"key"`
@@ -128,8 +132,9 @@ func init() {
 
 func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
-		MinRemaining: 0.02,
-		IdleMinutes:  5,
+		MinRemaining:        0.02,
+		IdleMinutes:         5,
+		StreamPrefetchBytes: 512,
 		Features: featureConfig{
 			FallbackOnRefusal:             true,
 			ClientFallbackNotices:         true,
@@ -177,6 +182,9 @@ func validateConfig(cfg pluginConfig) error {
 	}
 	if cfg.IdleMinutes < 0 {
 		return fmt.Errorf("idle_minutes must be non-negative, got %d", cfg.IdleMinutes)
+	}
+	if cfg.StreamPrefetchBytes < 1 {
+		return fmt.Errorf("stream_prefetch_bytes must be at least 1, got %d", cfg.StreamPrefetchBytes)
 	}
 	ids := make(map[string]bool, len(cfg.Groups))
 	for index, group := range cfg.Groups {
@@ -231,6 +239,7 @@ func pluginRegistration() registration {
 				{Name: "management_key", Type: "string", Description: "Required: CPA management key used to read provider quota and save settings from the UI."},
 				{Name: "min_remaining", Type: "number", Default: 0.02, Description: "Quota fraction (0-1) every window of a credential must keep for it to be used."},
 				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a credential or smart group session binding may re-rank (0 disables session stickiness)."},
+				{Name: "stream_prefetch_bytes", Type: "integer", Default: 512, Description: "Bytes of visible text a smart group stream buffers and checks for refusals before forwarding to the client."},
 				{Name: "groups", Type: "array", Description: "Smart Groups ({id, name, strategy, models}): virtual models that automatically route around safeguard refusals, errors, and low quota with 5m cache stickiness."},
 				{Name: "features", Type: "object", Description: "Safeguard and client-wire adaptation toggles and custom notice_prefix."},
 			},

@@ -285,7 +285,7 @@ func executeGroupStream(raw []byte, cfg pluginConfig) ([]byte, error) {
 		if errDecode := json.Unmarshal(rawResp, &resp); errDecode != nil {
 			return nil, fmt.Errorf("decode host.model.execute_stream response: %w", errDecode)
 		}
-		prefetched, done, errPrefetch := prefetchStream(resp.StreamID, req.HostCallbackID, cfg.Features.FallbackOnRefusal)
+		prefetched, done, errPrefetch := prefetchStream(resp.StreamID, req.HostCallbackID, cfg.Features.FallbackOnRefusal, cfg.StreamPrefetchBytes)
 		if errPrefetch != nil {
 			attempts = append(attempts, groupAttempt{Model: model, Result: "failed: " + errPrefetch.Error()})
 			lastErr = errPrefetch

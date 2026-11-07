@@ -75,7 +75,7 @@ of the longest quota window governing that model. A credential with 30% left res
 
 Open **Safeguard Killer** in the CPA Management Center sidebar. The interface is organized into five tabs:
 
-1. **General Settings:** Configure `management_key`, `min_remaining`, `idle_minutes`, the 8 safeguard/adaptation toggles, and the custom client notice prefix.
+1. **General Settings:** Configure `management_key`, `min_remaining`, `idle_minutes`, `stream_prefetch_bytes`, the 8 safeguard/adaptation toggles, and the custom client notice prefix.
 2. **Smart Groups:** Add, reorder, and delete Smart Groups, pick each group's routing strategy (`In Order`, `Quota Spread`, or `Random`), and manage each group's model chain.
 3. **Sessions:** Live view of active credential bindings and 5-minute Smart Group model pins with expiry countdowns.
 4. **Recent Decisions:** Full audit log of every group failover chain and credential quota ranking.
@@ -111,6 +111,7 @@ plugins:
       management_key: "<management key>"
       min_remaining: 0.02
       idle_minutes: 5
+      stream_prefetch_bytes: 512
       features:
         fallback_on_refusal: true
         client_fallback_notices: true

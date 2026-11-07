@@ -15,11 +15,6 @@ import (
 )
 
 const (
-	// streamPrefetchBytes is how many bytes of visible text executeGroupStream buffers before
-	// committing to a candidate model, so prompt-level, thinking-phase, and streaming safeguard or
-	// text refusals can switch to the next model in the group before any chunk is sent.
-	streamPrefetchBytes = 1024
-
 	// groupCacheTTL is how long a group session stays pinned to the model that last succeeded
 	// (matching the 5-minute server prompt-cache window) before retrying from the first model.
 	groupCacheTTL = 5 * time.Minute
@@ -742,11 +737,11 @@ func checkNonStreamResponse(body []byte) error {
 	return nil
 }
 
-// prefetchStream reads initial chunks from sourceStreamID until at least streamPrefetchBytes of
+// prefetchStream reads initial chunks from sourceStreamID until at least prefetchBytes of
 // visible text (or a tool call) arrive, or the stream finishes. When checkRefusal is true and a
 // refusal or error occurs before that threshold, sourceStreamID is closed and an error is returned
 // so the caller can switch to the next model in the group before emitting anything to the client.
-func prefetchStream(sourceStreamID, callbackID string, checkRefusal bool) ([][]byte, bool, error) {
+func prefetchStream(sourceStreamID, callbackID string, checkRefusal bool, prefetchBytes int) ([][]byte, bool, error) {
 	var prefetched [][]byte
 	var visibleBuf strings.Builder
 	sawTool := false
@@ -793,7 +788,7 @@ func prefetchStream(sourceStreamID, callbackID string, checkRefusal bool) ([][]b
 			}
 			return prefetched, true, nil
 		}
-		if sawTool || visibleBuf.Len() >= streamPrefetchBytes {
+		if sawTool || visibleBuf.Len() >= prefetchBytes {
 			return prefetched, false, nil
 		}
 	}
