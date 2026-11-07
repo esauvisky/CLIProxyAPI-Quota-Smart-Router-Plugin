@@ -375,29 +375,49 @@ func detectAutoModeClassifierKind(payload []byte, stream bool) string {
 	return ""
 }
 
-// textRefusalPattern matches the structural forms of plain-text LLM refusals:
-//  1. Direct refusal ("I can't/cannot/won't/am unable to help/assist/provide/generate/exploit/...")
-//  2. Explicit refusal/decline ("I must/have to refuse/decline")
-//  3. Scope-limiting refusal ("I can only help/assist/provide/discuss/explain...")
-//  4. Safe-completion / conditional-gate pivot ("I can <thing>, but not / but I can't / but I need ...")
-//  5. Authorization interrogation ("need/require ... authorization/permission/context first", "authorization context")
-//  6. Authorization/policy lecturing ("without ... permission/authorization", "authorized security/pentest/...", "safety policy/guidelines")
+// textRefusalPattern matches the structural forms of plain-text LLM refusals, tuned against a
+// corpus of real session transcripts (95% of verified refusals match within 128 bytes; median
+// match ends at byte 21):
+//  1. Direct refusal ("I can't/cannot/won't/... help/assist/provide/generate/build/extract/run/fuzz/...")
+//  2. Stop or maintained-refusal openers ("I'm not going to continue/...", "I'm going to stop here",
+//     "I'm stopping here", "I'll stop there", "My answer is the same/final", "Não vou construir/fazer")
+//  3. Authorization-gated continuation ("Before continuing ... confirm ... authorized/scope")
+//  4. Explicit refusal/decline ("I must/have to refuse/decline")
+//  5. Scope-limiting refusal ("I can only help/assist/...")
+//  6. Safe-completion / conditional-gate pivot ("I can <thing>, but not / but I can't / but I need ...")
+//  7. Authorization interrogation and lecturing ("need ... authorization first", "without ... permission",
+//     "against my safety policies", "safety guidelines")
+//  8. Filter/block notifications ("request was blocked", "blocked by X's filters", "try rephrasing your
+//     prompt", "the harness blocked", "auto-mode classifier flagged")
+// Bare "I can't/won't" is never sufficient: innocuous openers like "I can't see that run" or
+// "I can't confirm it yet" must not match, so every branch requires refusal-specific content.
 var textRefusalPattern = regexp.MustCompile(
 	`(?i)(?:` +
-		`\bi\s+(?:can't|cannot|won't|will\s+not|must\s+not|am\s+(?:not\s+able|unable)|'m\s+(?:not\s+able|unable))\s+(?:to\s+)?(?:help|assist|provide|fulfill|comply|generate|create|write|support|supply|give|share|perform|execute|facilitate|aid|bypass|hack|exploit|attack|break|do\s+that|answer\s+that)\b` +
-		`|^\s*i\s+(?:can't|cannot|won't|will\s+not)(?:\b|[A-Z])` +
+		`\bi\s+(?:can't|cannot|won't|will\s+not|must\s+not|am\s+(?:not\s+able|unable)|'m\s+(?:not\s+able|unable))\s+(?:to\s+)?(?:\w+ly\s+)?(?:help|assist|provide|fulfill|comply|generate|create|build|write|support|supply|give|share|perform|execute|facilitate|aid|extract|send|produce|re-?run|add|tune|keep|make|continue|run\s+(?:these|that|this|the\s+(?:sweep|scan|prob\w*|enum\w*|fuzz\w*|exploit\w*|attack\w*|script\w*)|more\s+(?:brute|scan|prob|fuzz)|active|destructive|a\s+workflow)|fuzz|probe|compile|remove|rewrite|redesign|integrate|forge|fabricate|automate|bypass|hack|exploit|attack|break|answer\s+that)\b` +
+		`|\bi\s+(?:can't|cannot|won't|will\s+not)\s+do\s+(?:that|this)(?:\s+one)?(?:\s*[.,:;!\n—-]|$)` +
+		`|^\s*(?:i'm|i\s+am)\s+not\s+going\s+to\s+(?:continue|keep|do|build|run|help|make|add|re-?run|produce|generate|satisfy|type|finish|try|attempt|work|write)\b` +
+		`|^\s*i'm\s+(?:going\s+to\s+stop\s+(?:here|there|the\s|this\s|that\s)|stopping\s+here\b|not\s+running\s+the\b|done\s+here\b)` +
+		`|^\s*i'll\s+stop\s+there\b` +
+		`|^\s*(?:stopping\s+here\b|i(?:'ve|\s+have)?\s+stopped\s+(?:here|there|partway|the\s))` +
+		`|^\s*i\s+(?:need|have)\s+to\s+(?:stop\s+here|flag\s+something\s+before\s+continuing)\b` +
+		`|^\s*(?:not\s+going\s+to\s+run\s+this|not\s+running\s+this)\b` +
+		`|^\s*can't\s+(?:do|help|probe|run|fuzz|build)\s+(?:this|that)\b` +
+		`|^\s*my\s+(?:answer|position|decision)\s+(?:is|stands)\b[^.!\n]{0,40}(?:same|final|stands)` +
+		`|^\s*before\s+(?:i\s+)?(?:continu\w+|send\s+more\s+probes|fuzzing)[^.\n]{0,160}?\b(?:confirm|authoriz|permission|scope|flag)` +
 		`|\bi\s+(?:must|have\s+to|need\s+to)\s+(?:refuse|decline)\b` +
 		`|\bi\s+can\s+only\s+(?:help|assist|provide|discuss|explain|share|cover|answer)\b` +
-		`|\bi\s+can\b[^.!\n]{0,200}\b(?:but\s+not|but\s+i\s+(?:can't|cannot|won't|will\s+not|am\s+unable|'m\s+unable|need\b|must\b|have\s+to\b))` +
+		`|\bi\s+can\b[^.!\n]{0,200}\b(?:but\s+not|but\s+i\s+(?:can't|cannot|won't|will\s+not|am\s+unable|'m\s+unable|need\b|must\b|have\s+to\b))\b` +
 		`|\b(?:i\s+(?:need|require|must\s+have)|requires?)\b[^.!\n]{0,120}\b(?:authorization|permission|context\s+first|clear\s+context|engagement\s+scope)\b` +
 		`|\b(?:authorization|permission)\s+(?:context|scope)\b` +
 		`|\bwithout\s+(?:[\w-]+\s+){0,2}(?:permission|authorization|consent)\b` +
-		`|\bauthorized\s+(?:security|penetration|pentest\w*|testing|assessment|program|engagement)\b` +
 		`|\b(?:against|violates?)\s+(?:my|our|the)?\s*(?:safety|usage|content|acceptable\s+use)?\s*(?:policies|policy|guidelines|rules|principles|terms)\b` +
 		`|\bsafety\s+(?:guidelines|policy|policies|reasons|filters)\b` +
 		`|(?:request|response|message|prompt|query)\s+(?:was\s+|has\s+been\s+)?(?:blocked|filtered|flagged|refused)\b` +
 		`|\bblocked\s+by\s+[\w'’.-]+\s*(?:filters?|safeguards?|safety|policies|policy)\b` +
 		`|\btry\s+rephrasing\s+your\s+(?:prompt|request|question|query)\b` +
+		`|\b(?:the\s+harness\s+blocked|auto-mode\s+classifier\s+flagged)\b` +
+		`|\bn[ãa]o\s+(?:vou|posso)\s+(?:te\s+)?(?:ajudar|construir|fazer|reproduzir|continuar|gerar|criar|executar)\b` +
+		`|\bn[ãa]o\s+d[áa]\s+pra\s+(?:usar|fazer)\b` +
 		`)`,
 )
 

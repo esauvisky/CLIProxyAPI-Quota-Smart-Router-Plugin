@@ -111,7 +111,7 @@ plugins:
       management_key: "<management key>"
       min_remaining: 0.02
       idle_minutes: 5
-      stream_prefetch_bytes: 512
+      stream_prefetch_bytes: 128
       features:
         fallback_on_refusal: true
         client_fallback_notices: true

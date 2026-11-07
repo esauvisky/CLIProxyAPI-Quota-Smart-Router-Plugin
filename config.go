@@ -134,7 +134,7 @@ func defaultPluginConfig() pluginConfig {
 	return pluginConfig{
 		MinRemaining:        0.02,
 		IdleMinutes:         5,
-		StreamPrefetchBytes: 512,
+		StreamPrefetchBytes: 128,
 		Features: featureConfig{
 			FallbackOnRefusal:             true,
 			ClientFallbackNotices:         true,
@@ -239,7 +239,7 @@ func pluginRegistration() registration {
 				{Name: "management_key", Type: "string", Description: "Required: CPA management key used to read provider quota and save settings from the UI."},
 				{Name: "min_remaining", Type: "number", Default: 0.02, Description: "Quota fraction (0-1) every window of a credential must keep for it to be used."},
 				{Name: "idle_minutes", Type: "integer", Default: 5, Description: "Minutes without a prompt after which a credential or smart group session binding may re-rank (0 disables session stickiness)."},
-				{Name: "stream_prefetch_bytes", Type: "integer", Default: 512, Description: "Bytes of visible text a smart group stream buffers and checks for refusals before forwarding to the client."},
+				{Name: "stream_prefetch_bytes", Type: "integer", Default: 128, Description: "Bytes of visible text a smart group stream buffers and checks for refusals before forwarding to the client."},
 				{Name: "groups", Type: "array", Description: "Smart Groups ({id, name, strategy, models}): virtual models that automatically route around safeguard refusals, errors, and low quota with 5m cache stickiness."},
 				{Name: "features", Type: "object", Description: "Safeguard and client-wire adaptation toggles and custom notice_prefix."},
 			},
